@@ -1,0 +1,314 @@
+id: test
+name: Test
+version: 1
+
+constants:
+  grpc_host: demo.connectrpc.com:443
+  users_url: http://127.0.0.1:18080/users/1
+  openai_base_url: http://127.0.0.1:18080/v1
+  telegram_base_url: http://127.0.0.1:18080
+  postgres_dsn: postgres://wiregoblin:wiregoblin@127.0.0.1:15432/wiregoblin?sslmode=disable
+  redis_address: 127.0.0.1:16379
+  container_image: alpine:3.20
+  mock_openai_token: demo-openai-token
+  mock_telegram_token: demo-telegram-token
+  mock_telegram_chat_id: "100100"
+
+secrets:
+  email: ${EMAIL}
+  password: ${PASSWORD}
+  openai_token: ${OPENAI_API_KEY}
+  telegram_token: ${TELEGRAM_BOT_TOKEN}
+  telegram_chat_id: ${TELEGRAM_CHAT_ID}
+
+variables:
+  retry_state: done
+  run_label: bootstrap
+
+workflows:
+  http_example:
+    name: HTTP Example
+    blocks:
+      request1:
+        name: Get User
+        type: http
+        method: GET
+        url: "$users_url"
+        response:
+          body.id: "@user_id"
+          body.name: "@user_name"
+          body.role: "@user_role"
+        outputs:
+          http_status: statusCode
+
+      assert_http_status:
+        name: Assert HTTP Status
+        type: assert
+        variable: http_status
+        operator: "="
+        expected: "200"
+        error_message: "HTTP example did not return 200"
+
+  grpc_example:
+    name: gRPC Example
+    blocks:
+      say:
+        name: Say
+        type: grpc
+        address: "$grpc_host"
+        tls: true
+        method: /connectrpc.eliza.v1.ElizaService/Say
+        request: '{"sentence":"I feel happy."}'
+        metadata:
+          x-request-id: example-request
+        response_mapping:
+          - key: eliza_reply
+            path: sentence
+
+      assert_reply:
+        name: Assert Reply
+        type: assert
+        variable: eliza_reply
+        operator: "!="
+        expected: ""
+        error_message: "gRPC response_mapping did not populate eliza_reply"
+
+  local_stack_example:
+    name: Local Stack Example
+    constants:
+      local_run_id: local-stack-user
+    variables:
+      run_label: local-stack
+      retry_state: done
+    blocks:
+      init_context:
+        name: Init Context
+        type: setvars
+        assignments:
+          - variable: run_label
+            value: local-stack
+          - variable: retry_state
+            value: done
+
+      fetch_user:
+        name: Fetch User
+        type: http
+        method: GET
+        url: "$users_url"
+        headers:
+          X-Workflow-Run: "@run_label"
+        response:
+          body.id: "@user_id"
+          body.name: "@user_name"
+          body.role: "@user_role"
+        outputs:
+          user_http_status: statusCode
+
+      cache_user_name:
+        name: Cache User Name
+        type: redis
+        address: "$redis_address"
+        command: SET
+        args:
+          - workflow:user_name
+          - "@user_name"
+        outputs:
+          redis_write_result: result
+
+      read_cached_user_name:
+        name: Read Cached User Name
+        type: redis
+        address: "$redis_address"
+        command: GET
+        args:
+          - workflow:user_name
+        response_mapping:
+          - key: cached_user_name
+            path: result
+
+      prepare_postgres:
+        name: Prepare Postgres
+        type: postgres
+        dsn: "$postgres_dsn"
+        query: >
+          create table if not exists workflow_runs (
+            id text primary key,
+            user_name text not null,
+            status text not null
+          )
+
+      seed_postgres:
+        name: Seed Postgres
+        type: postgres
+        dsn: "$postgres_dsn"
+        query: >
+          insert into workflow_runs (id, user_name, status)
+          values ('local-stack-user', 'Alice Goblin', 'cached')
+          on conflict (id) do update
+          set user_name = excluded.user_name, status = excluded.status
+
+      read_postgres:
+        name: Read Postgres
+        type: postgres
+        dsn: "$postgres_dsn"
+        query: >
+          select id from workflow_runs where id = 'local-stack-user'
+        response_mapping:
+          - key: postgres_row_count
+            path: rowCount
+
+      short_delay:
+        name: Short Delay
+        type: delay
+        milliseconds: 25
+
+      run_container:
+        name: Run Container
+        type: container
+        image: "$container_image"
+        command: printf '%s' "$MESSAGE"
+        env:
+          MESSAGE: "@cached_user_name"
+        outputs:
+          container_stdout: stdout
+          container_exit_code: exitCode
+
+      local_openai:
+        name: Local OpenAI Mock
+        type: openai
+        base_url: "$openai_base_url"
+        token: "$mock_openai_token"
+        model: gpt-4.1-mini
+        system_prompt: You are a concise mock assistant.
+        user_prompt: "@cached_user_name"
+        response_mapping:
+          - key: openai_status
+            path: status
+
+      local_telegram:
+        name: Local Telegram Mock
+        type: telegram
+        base_url: "$telegram_base_url"
+        token: "$mock_telegram_token"
+        chat_id: "$mock_telegram_chat_id"
+        message: "@cached_user_name"
+        response_mapping:
+          - key: telegram_status
+            path: status
+
+      goto_without_jump:
+        name: Goto Without Jump
+        type: goto
+        variable: retry_state
+        operator: "="
+        expected: retry
+        target_step_uid: final_assertions
+
+      final_assertions:
+        name: Final Assertions
+        type: assert
+        variable: cached_user_name
+        operator: "="
+        expected: Alice Goblin
+        error_message: "Redis cache did not return Alice Goblin"
+
+      assert_container_stdout:
+        name: Assert Container Stdout
+        type: assert
+        variable: container_stdout
+        operator: "="
+        expected: Alice Goblin
+        error_message: "Container output did not match cached user name"
+
+      assert_postgres_row_count:
+        name: Assert Postgres Row Count
+        type: assert
+        variable: postgres_row_count
+        operator: "="
+        expected: "1"
+        error_message: "Postgres example did not return exactly one row"
+
+      assert_openai_status:
+        name: Assert OpenAI Status
+        type: assert
+        variable: openai_status
+        operator: "="
+        expected: "200"
+        error_message: "OpenAI mock did not return 200"
+
+      assert_telegram_status:
+        name: Assert Telegram Status
+        type: assert
+        variable: telegram_status
+        operator: "="
+        expected: "200"
+        error_message: "Telegram mock did not return 200"
+
+  goto_example:
+    name: Goto Example
+    variables:
+      retry_state: retry
+    blocks:
+      mark_retry:
+        name: Mark Retry
+        type: setvars
+        assignments:
+          - variable: retry_state
+            value: retry
+
+      jump_once:
+        name: Jump Once
+        type: goto
+        variable: retry_state
+        operator: "="
+        expected: retry
+        target_step_uid: finalize_retry
+
+      skipped_on_first_pass:
+        name: Skipped On First Pass
+        type: setvars
+        assignments:
+          - variable: retry_note
+            value: this-step-was-skipped
+
+      finalize_retry:
+        name: Finalize Retry
+        type: setvars
+        assignments:
+          - variable: retry_state
+            value: done
+
+      assert_retry_done:
+        name: Assert Retry Done
+        type: assert
+        variable: retry_state
+        operator: "="
+        expected: done
+        error_message: "Goto example did not land on the expected step"
+
+  error_handler_example:
+    name: Error Handler Example
+    blocks:
+      force_failure:
+        name: Force Failure
+        type: assert
+        variable: run_label
+        operator: "="
+        expected: should-fail
+        error_message: "This workflow intentionally fails to demonstrate catchErrorBlocks"
+    catchErrorBlocks:
+      notify_local_telegram:
+        name: Notify Local Telegram
+        type: telegram
+        base_url: "$telegram_base_url"
+        token: "$mock_telegram_token"
+        chat_id: "$mock_telegram_chat_id"
+        message: "@ErrorMessage"
+
+  workflow_block_example:
+    name: Workflow Block Example
+    blocks:
+      nested_workflow:
+        name: Nested Workflow
+        type: workflow
+        target_workflow_uid: local_stack_example

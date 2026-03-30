@@ -1,0 +1,14 @@
+# IDE
+.idea/
+.vscode/
+
+# Binaries
+wiregoblin
+cli
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store

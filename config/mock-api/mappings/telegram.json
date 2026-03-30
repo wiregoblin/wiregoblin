@@ -1,0 +1,23 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "/botdemo-telegram-token/sendMessage"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "ok": true,
+      "result": {
+        "message_id": 1,
+        "chat": {
+          "id": 100100,
+          "type": "private"
+        },
+        "text": "accepted by local mock"
+      }
+    }
+  }
+}

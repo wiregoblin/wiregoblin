@@ -1,0 +1,32 @@
+services:
+  mock-api:
+    image: wiremock/wiremock:3.13.2
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./config/mock-api:/home/wiremock
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: wiregoblin
+      POSTGRES_USER: wiregoblin
+      POSTGRES_PASSWORD: wiregoblin
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wiregoblin -d wiregoblin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
