@@ -1,6 +1,21 @@
-# 🧌 WireGoblin
+# WireGoblin
 
-Workflow runner for integration testing and automation. Define steps in YAML — call HTTP APIs, gRPC services, databases, run containers, assert results, and loop with goto.
+Declarative workflow runner for integration testing and service orchestration. Define steps in YAML — call HTTP APIs, gRPC services, databases, send emails, run containers, assert results, loop with goto.
+
+No glue code. No one-off scripts. One workflow file, one command.
+
+## Features
+
+- **HTTP, gRPC, Postgres, Redis, Docker** — built-in blocks for the most common integration targets
+- **Assertions and conditions** — fail fast or skip steps based on response data
+- **Retry with backoff** — configurable attempts, delay doubling, and per-status-code rules
+- **Loops and goto** — build dynamic flows with conditional jumps and wait intervals
+- **Foreach and parallel** — iterate over lists or run blocks concurrently with collect aggregation
+- **Nested workflows** — compose reusable workflows with explicit inputs and outputs
+- **Email** — send via SMTP and wait for delivery via IMAP with criteria matching
+- **Transform** — build structured payloads, cast types, and extract values with regex
+- **Secret handling** — secrets are redacted in all logs and step output
+- **Streaming output** — NDJSON event stream for CI integration and custom tooling
 
 ## Install
 
@@ -17,13 +32,15 @@ wiregoblin-cli run -p config/example.project.yaml http_example
 
 If `-p` is omitted, WireGoblin looks for `wiregoblin.yaml` or `wiregoblin.yml` in the current directory.
 
-Verbosity:
+**Verbosity flags:**
 
-- default: live progress and final summary
-- `-v`: add step outcome and timing
-- `-vv`: add compact response summaries
-- `-vvv`: add full request/response payloads
-- `--json`: stream NDJSON events to stdout
+| Flag | Output |
+|------|--------|
+| _(default)_ | Live progress and final summary |
+| `-v` | Step outcome and timing |
+| `-vv` | Compact response summaries |
+| `-vvv` | Full request/response payloads |
+| `--json` | Stream NDJSON events to stdout |
 
 ## Config
 
@@ -65,47 +82,74 @@ workflows:
         message: "User $user_id has been created"
 ```
 
-References:
+### References
 
-- `$name` — runtime variable or secret variable
-- `@name` — project/workflow constant or secret
-- `!name` — read-only runtime built-in, for example `!ErrorMessage`, `!ErrorBlockID`, or `!Parent.WorkflowID`
-- secret variables are mutable but redacted in logs and step output
-- assignment targets always use `$name`; if `name` exists in `secret_variables`, the write goes there
-- inline interpolation is supported: `"Bearer @token"`, `"Hello, $user!"`
-- inline interpolation also works inside structured string payloads such as gRPC `request` JSON: `{"sentence":"Hello, $user from !Parent.WorkflowName"}`
-- `assign` maps runtime variables to block data paths; use `body.*` for the main payload and `outputs.*` for block output values such as status codes
-- every step can define `condition:` with the same `variable`, `operator`, and `expected` shape as `assert`; when it does not match, the step is skipped
-- every step can define `continue_on_error: true`; failed steps then get status `ignored-error`, do not stop the workflow, and do not trigger `catch_error_blocks`
-- every workflow can define `timeout_seconds`; this caps total runtime for the whole workflow, not just one block
-- `condition.variable`, `assert.variable`, and `goto.variable` are explicit expressions: use a leading `$` to read one runtime variable such as `$status` or `$cached_$user_id`; without `$`, the field is treated as a literal or reference-aware string
-- `assert` and `goto` support `=`, `!=`, `>`, `<`, `>=`, `<=`, and `contains` (`like` is an alias)
-- `goto` also supports optional `wait_seconds` before jumping to `target_step_id`
-- `assert.expected` supports the same `@name` and `$name` interpolation as other reference-aware string fields
-- `http` also supports optional `tls_skip_verify: true` for self-signed or staging TLS endpoints and exports `outputs.responseTimeMs` for latency assertions
-- `grpc` exports `outputs.responseTimeMs` for latency assertions
-- `smtp` sends one email and exposes message metadata such as `body.subject` and `outputs.message_id`
-- `imap` waits for and reads one email; use `body.message.text`, `body.message.html`, `body.message.subject`, and `body.message.message_id`
-- `imap.criteria` supports `message_id`, `from`, `to`, `subject_contains`, `body_contains`, and `unseen_only`
-- `workflow` blocks start with the child workflow's own scope; pass parent values explicitly via `inputs:`, and use `!Parent.*` for read-only built-ins from the parent
-- `!Parent.*` values are populated only when a workflow is invoked by a parent `workflow` block
-- workflows declare their public contract through `outputs:`; a parent `workflow` block sees only those declared keys via `outputs.*`, and without `outputs:` nothing is exported outward
-- `retry` exposes `!Retry.Attempt` and `!Retry.MaxAttempts` inside its nested `block`; `delay_ms` is the base delay and doubles after each failed attempt
-- `retry` also supports optional `retry_on:` with `status_codes` and `transport_errors` to limit which errors are retried
-- `foreach` exposes `!Each.Index`, `!Each.Count`, `!Each.First`, `!Each.Last`, `!Each.Item`, `!Each.ItemJSON`, and object fields like `!Each.Item.id` inside its nested `block`
-- `foreach.items` accepts either an array / JSON array string or a numeric range object with `from`, `to`, and optional `step`
-- `foreach` accepts optional `concurrency`; when `concurrency > 1`, iterations run in parallel, but `results` and `collect` stay in input order
-- `foreach` also supports `collect:` with `$target: path` entries to aggregate per-iteration values into arrays and write them directly into runtime variables; collected values are also exposed in `body.collected.*`
-- with `foreach.concurrency > 1`, nested blocks cannot use runtime `assign`; use `collect` instead
-- in `foreach.collect`, use local paths like `item.*`, `output.*`, `exports.*`, plus `error` and `index` for per-iteration metadata
-- when `foreach.concurrency > 1`, the block waits for all started iterations to finish; if any iteration fails, `foreach` returns one aggregate error and still includes per-iteration results and errors
-- `parallel` runs heterogeneous nested blocks concurrently and exposes branch results by branch `id`
-- `parallel` also supports `collect:` with paths like `fetch_user.output.body` or `read_session.exports.statusCode`; unlike `foreach.collect`, these paths must start with the branch `id`
-- nested `parallel` branches cannot use runtime `assign`; use `collect` instead
-- `parallel` also waits for all started branches to finish; if any branch fails, `parallel` returns one aggregate error and still includes all branch results and errors
-- `collect` paths are treated as literal data paths and are not interpolated as `$`/`@`/`!` references
-- `transform` returns both `value` and serialized `json`; use `casts` to convert interpolated strings into `int`, `float`, `bool`, `string`, or parsed `json`
-- `transform` also supports `regex:` extraction; use `extracted.<name>` in `assign` paths after matching against `value` or `value.*`
+| Prefix | Resolves to |
+|--------|-------------|
+| `$name` | Runtime variable or secret variable |
+| `@name` | Project/workflow constant or secret |
+| `!name` | Read-only built-in: `!ErrorMessage`, `!ErrorBlockID`, `!Parent.WorkflowID`, etc. |
+
+- Inline interpolation is supported in string fields: `"Bearer @token"`, `"Hello, $user!"`
+- Inline interpolation also works inside structured string payloads such as gRPC `request` JSON: `{"sentence":"Hello, $user from !Parent.WorkflowName"}`
+- `$`, `@`, and `!` prefixes in `condition.variable`, `assert.variable`, and `goto.variable` are explicit: use `$status` to read a runtime variable, or omit `$` for a literal.
+- Project and workflow `constants` are string-valued; numeric-looking values (e.g. ports) remain in the `@name` string namespace.
+
+### Variables
+
+- `assign` maps block data paths to runtime variables: use `body.*` for the main payload, `outputs.*` for block output values such as status codes.
+- Secret variables declared in `secret_variables` are mutable but redacted in logs and step output.
+- Assignment targets always use `$name`; if `name` exists in `secret_variables`, the write goes there.
+- `collect` paths are treated as literal data paths and are not interpolated as `$`/`@`/`!` references.
+
+### Step control
+
+- Every step can define `condition:` with `variable`, `operator`, and `expected`; when the condition does not match, the step is skipped.
+- Every step can define `continue_on_error: true`; failed steps then get status `ignored-error`, do not stop the workflow, and do not trigger `catch_error_blocks`.
+- Every workflow can define `timeout_seconds` to cap total runtime for the entire workflow.
+
+### Operators
+
+`assert` and `goto` support: `=`, `!=`, `>`, `<`, `>=`, `<=`, `contains` (`like` is an alias).
+
+`goto` also supports optional `wait_seconds` before jumping to `target_step_id`.
+
+`assert.expected` supports the same `@name` and `$name` interpolation as other string fields.
+
+### Block-specific notes
+
+- `http` supports optional `tls_skip_verify: true` for self-signed or staging endpoints; exports `outputs.responseTimeMs`.
+- `grpc` exports `outputs.responseTimeMs`; `bytes` fields use raw strings by default — prefix with `base64:` for binary: `{"payload":"base64:SGVsbG8="}`.
+- `http`, `openai`, and `telegram` accept optional `timeout_seconds`.
+- `smtp` sends one email; exposes `body.subject` and `outputs.message_id`.
+- `imap` waits for and reads one email; use `body.message.text`, `body.message.html`, `body.message.subject`, `body.message.message_id`. Criteria: `message_id`, `from`, `to`, `subject_contains`, `body_contains`, `unseen_only`.
+- `container` runs `sh -c` inside the configured image; treat `command` as trusted input.
+- `transform` returns `value` and serialized `json`; use `casts` to convert interpolated strings into `int`, `float`, `bool`, `string`, or parsed `json`; supports `regex:` extraction via `extracted.<name>` in `assign` paths.
+
+### Nested blocks
+
+**`retry`**
+- Exposes `!Retry.Attempt` and `!Retry.MaxAttempts` inside `block`; `delay_ms` doubles after each failed attempt.
+- Optional `retry_on:` with `status_codes` and `transport_errors` limits which errors are retried.
+
+**`foreach`**
+- Exposes `!Each.Index`, `!Each.Count`, `!Each.First`, `!Each.Last`, `!Each.Item`, `!Each.ItemJSON`, and object fields like `!Each.Item.id` inside `block`.
+- `items` accepts an array, a JSON array string, or a numeric range object with `from`, `to`, and optional `step`.
+- Optional `concurrency`; when `concurrency > 1`, iterations run in parallel but `results` and `collect` stay in input order.
+- `collect:` aggregates per-iteration values into arrays; paths use `item.*`, `output.*`, `exports.*`, `error`, and `index`.
+- When `concurrency > 1`, nested blocks cannot use runtime `assign`; use `collect` instead.
+- When `concurrency > 1`, the block waits for all iterations; any failure returns an aggregate error but still includes per-iteration results.
+
+**`parallel`**
+- Runs heterogeneous nested blocks concurrently; exposes branch results by branch `id`.
+- `collect:` paths must start with the branch `id`, e.g. `fetch_user.output.body`.
+- Nested branches cannot use runtime `assign`; use `collect` instead.
+- Waits for all branches; any failure returns an aggregate error but still includes all branch results.
+
+**`workflow`**
+- Child workflow starts with its own scope; pass parent values explicitly via `inputs:`.
+- `!Parent.*` built-ins are populated only when a workflow is invoked by a parent `workflow` block.
+- Workflows declare their public contract via `outputs:`; a parent `workflow` block sees only those declared keys via `outputs.*`.
 
 ## Blocks
 
@@ -131,7 +175,9 @@ References:
 | `transform` | Build structured data and cast values |
 | `workflow` | Run a nested workflow |
 
-Examples:
+## Examples
+
+### Conditional step and continue on error
 
 ```yaml
 - id: "notify_on_failure"
@@ -154,6 +200,8 @@ Examples:
   message: "Deployment finished"
 ```
 
+### Workflow timeout with goto loop
+
 ```yaml
 workflow_timeout_example:
   name: "Workflow Timeout Example"
@@ -170,6 +218,8 @@ workflow_timeout_example:
       wait_seconds: 1
 ```
 
+### Retry with backoff
+
 ```yaml
 - id: "wait_ready"
   type: "retry"
@@ -183,6 +233,8 @@ workflow_timeout_example:
     method: "GET"
     url: "@api_host/health"
 ```
+
+### Foreach with concurrency and collect
 
 ```yaml
 - id: "notify_each_user"
@@ -199,6 +251,8 @@ workflow_timeout_example:
     $errors: "error"
 ```
 
+### Foreach with numeric range
+
 ```yaml
 - id: "generate_range"
   type: "foreach"
@@ -212,6 +266,8 @@ workflow_timeout_example:
   collect:
     $range_values: "item"
 ```
+
+### Postgres transaction
 
 ```yaml
 - id: "run_postgres_transaction"
@@ -227,6 +283,8 @@ workflow_timeout_example:
     - query: "update metrics set total = $1"
       params: ["$row_count"]
 ```
+
+### Parallel with collect
 
 ```yaml
 - id: "prepare_context"
@@ -245,6 +303,8 @@ workflow_timeout_example:
     $session: "read_session.output.body.result"
 ```
 
+### TLS skip verify
+
 ```yaml
 - id: "staging_healthcheck"
   type: "http"
@@ -252,6 +312,8 @@ workflow_timeout_example:
   url: "https://internal.staging.svc/health"
   tls_skip_verify: true
 ```
+
+### Transform with casts and regex
 
 ```yaml
 - id: "build_payload"
@@ -281,6 +343,8 @@ workflow_timeout_example:
     $verification_code: "extracted.verification_code"
 ```
 
+### Email (SMTP + IMAP)
+
 ```yaml
 - id: "send_email"
   type: "smtp"
@@ -295,29 +359,6 @@ workflow_timeout_example:
   subject: "Verify your email"
   text: "Your code is 123456"
   html: "<p>Your code is <b>123456</b></p>"
-```
-
-```yaml
-- id: "nested_workflow"
-  type: "workflow"
-  target_workflow_id: "create_user"
-  inputs:
-    name: "Alice"
-  assign:
-    $created_id: "outputs.user_id"
-```
-
-```yaml
-create_user:
-  outputs:
-    user_id: "$created_user_id"
-  blocks:
-    - id: "create"
-      type: "http"
-      method: "POST"
-      url: "@users_create_url"
-      assign:
-        $created_user_id: "body.id"
 ```
 
 ```yaml
@@ -340,27 +381,32 @@ create_user:
     $email_text: "body.message.text"
 ```
 
+### Nested workflow
+
 ```yaml
-- id: "send_for_each_user"
-  type: "foreach"
-  items: "$users_json"
-  block:
-    type: "http"
-    method: "POST"
-    url: "@api_host/users/!Each.Item.id/notify"
-  collect:
-    $user_ids_json: "item.id"
-    $statuses_json: "output.status"
+# Parent
+- id: "nested_workflow"
+  type: "workflow"
+  target_workflow_id: "create_user"
+  inputs:
+    name: "Alice"
+  assign:
+    $created_id: "outputs.user_id"
 ```
 
-Notes:
-
-- `http`, `openai`, and `telegram` accept optional `timeout_seconds`
-- project and workflow `constants` are string-valued; numeric-looking constants such as ports are still configured in the `@name` string namespace
-- `smtp` and `imap` examples in `config/example.project.yaml` use the local GreenMail service from `docker-compose.example.yaml`
-- `container` runs `sh -c` inside the configured image; treat `command` as trusted input
-- gRPC `bytes` fields use raw strings by default; prefix with `base64:` for binary values
-  Example: `request: '{"payload":"base64:SGVsbG8="}'`
+```yaml
+# Child
+create_user:
+  outputs:
+    user_id: "$created_user_id"
+  blocks:
+    - id: "create"
+      type: "http"
+      method: "POST"
+      url: "@users_create_url"
+      assign:
+        $created_user_id: "body.id"
+```
 
 ## Docker
 
