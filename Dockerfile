@@ -11,7 +11,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} go build -o /out/wiregoblin ./cmd/cli
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} go build -o /out/wiregoblin-cli ./cmd/wiregoblin-cli
 
 FROM alpine:3.22
 
@@ -19,6 +19,6 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /workspace
 
-COPY --from=builder /out/wiregoblin /usr/local/bin/wiregoblin
+COPY --from=builder /out/wiregoblin-cli /usr/local/bin/wiregoblin-cli
 
-ENTRYPOINT ["/usr/local/bin/wiregoblin"]
+ENTRYPOINT ["/usr/local/bin/wiregoblin-cli"]

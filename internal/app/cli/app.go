@@ -2,7 +2,29 @@
 package cliapp
 
 import (
-	"github.com/wiregoblin/wiregoblin/internal/models"
+	"context"
+
+	assertblock "github.com/wiregoblin/wiregoblin/internal/block/assert"
+	containerblock "github.com/wiregoblin/wiregoblin/internal/block/container"
+	delayblock "github.com/wiregoblin/wiregoblin/internal/block/delay"
+	foreachblock "github.com/wiregoblin/wiregoblin/internal/block/foreach"
+	gotoblock "github.com/wiregoblin/wiregoblin/internal/block/goto"
+	grpcblock "github.com/wiregoblin/wiregoblin/internal/block/grpc"
+	httpblock "github.com/wiregoblin/wiregoblin/internal/block/http"
+	imapblock "github.com/wiregoblin/wiregoblin/internal/block/imap"
+	logblock "github.com/wiregoblin/wiregoblin/internal/block/log"
+	openaiblock "github.com/wiregoblin/wiregoblin/internal/block/openai"
+	parallelblock "github.com/wiregoblin/wiregoblin/internal/block/parallel"
+	postgresblock "github.com/wiregoblin/wiregoblin/internal/block/postgres"
+	redisblock "github.com/wiregoblin/wiregoblin/internal/block/redis"
+	retryblock "github.com/wiregoblin/wiregoblin/internal/block/retry"
+	setvarsblock "github.com/wiregoblin/wiregoblin/internal/block/setvars"
+	smtpblock "github.com/wiregoblin/wiregoblin/internal/block/smtp"
+	telegramblock "github.com/wiregoblin/wiregoblin/internal/block/telegram"
+	transformblock "github.com/wiregoblin/wiregoblin/internal/block/transform"
+	workflowblock "github.com/wiregoblin/wiregoblin/internal/block/workflow"
+	"github.com/wiregoblin/wiregoblin/internal/engine"
+	"github.com/wiregoblin/wiregoblin/internal/model"
 	"github.com/wiregoblin/wiregoblin/internal/repository"
 	filerepository "github.com/wiregoblin/wiregoblin/internal/repository/file"
 	workflowservice "github.com/wiregoblin/wiregoblin/internal/service/workflow"
@@ -19,11 +41,40 @@ func New(projectPath string) *App {
 	repo := filerepository.New(projectPath)
 	return &App{
 		projects: repo,
-		service:  workflowservice.New(repo),
+		service:  workflowservice.New(repo, newRegistry()),
 	}
 }
 
 // RunWorkflow starts streaming events for one workflow run.
-func (a *App) RunWorkflow(workflowName string, opts workflowservice.RunOptions) (<-chan models.RunEvent, error) {
-	return a.service.RunWorkflow(workflowName, opts)
+func (a *App) RunWorkflow(
+	ctx context.Context,
+	workflowName string,
+	opts workflowservice.RunOptions,
+) (<-chan model.RunEvent, error) {
+	return a.service.RunWorkflow(ctx, workflowName, opts)
+}
+
+// newRegistry builds the block registry used by the workflow engine.
+func newRegistry() *engine.Registry {
+	registry := engine.NewRegistry()
+	registry.Register(assertblock.New())
+	registry.Register(containerblock.New())
+	registry.Register(delayblock.New())
+	registry.Register(foreachblock.New())
+	registry.Register(gotoblock.New())
+	registry.Register(grpcblock.New())
+	registry.Register(httpblock.New())
+	registry.Register(imapblock.New())
+	registry.Register(logblock.New())
+	registry.Register(openaiblock.New())
+	registry.Register(parallelblock.New())
+	registry.Register(postgresblock.New())
+	registry.Register(redisblock.New())
+	registry.Register(retryblock.New())
+	registry.Register(setvarsblock.New())
+	registry.Register(smtpblock.New())
+	registry.Register(telegramblock.New())
+	registry.Register(transformblock.New())
+	registry.Register(workflowblock.New())
+	return registry
 }

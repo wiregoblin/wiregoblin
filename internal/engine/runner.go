@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/wiregoblin/wiregoblin/internal/block"
-	"github.com/wiregoblin/wiregoblin/internal/models"
+	condition2 "github.com/wiregoblin/wiregoblin/internal/condition"
+	"github.com/wiregoblin/wiregoblin/internal/model"
 	"github.com/wiregoblin/wiregoblin/internal/redact"
 )
 
@@ -23,41 +24,55 @@ type StepResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
+type blockLookup interface {
+	Get(blockType model.BlockType) (block.Block, error)
+}
+
+// Observer receives workflow execution events.
+type Observer interface {
+	OnStepStart(event model.StepStartEvent)
+	OnStepFinish(event model.StepFinishEvent)
+}
+
 // Runner executes workflow definitions through the registered blocks.
 type Runner struct {
-	registry *Registry
+	registry blockLookup
 	observer Observer
 }
 
 // New creates a workflow runner.
-func New(registry *Registry, options ...Option) *Runner {
-	runner := &Runner{
+func New(registry blockLookup, observer Observer) *Runner {
+	return &Runner{
 		registry: registry,
-		observer: nopObserver{},
+		observer: observer,
 	}
-	for _, option := range options {
-		option(runner)
-	}
-	return runner
 }
 
 // maxIterations caps total step executions to prevent infinite goto loops.
 const maxIterations = 1000
 
-// Error variable names injected into RunContext.Variables when a step fails.
+// Error built-in names injected into RunContext.Builtins when a step fails.
 const (
 	ErrorVarMessage    = "ErrorMessage"
+	ErrorVarBlockID    = "ErrorBlockID"
 	ErrorVarBlockName  = "ErrorBlockName"
 	ErrorVarBlockType  = "ErrorBlockType"
 	ErrorVarBlockIndex = "ErrorBlockIndex"
 )
 
+const (
+	stepStatusOK           = "ok"
+	stepStatusSkipped      = "skipped"
+	stepStatusFailed       = "failed"
+	stepStatusIgnoredError = "ignored-error"
+)
+
 // Run executes all enabled steps sequentially, honouring goto jumps.
-// @var and $const references in step configs are resolved from RunContext before each step.
+// $var, @name, and !builtin references in step configs are resolved from RunContext before each step.
 func (r *Runner) Run(
 	ctx context.Context,
-	project *models.Project,
-	definition *models.Workflow,
+	project *model.Project,
+	definition *model.Workflow,
 ) ([]StepResult, error) {
 	if containsWorkflowStep(definition) {
 		return nil, fmt.Errorf("nested workflow steps require RunWithWorkflows")
@@ -68,53 +83,132 @@ func (r *Runner) Run(
 // RunWithWorkflows executes one workflow and exposes sibling definitions for nested workflow steps.
 func (r *Runner) RunWithWorkflows(
 	ctx context.Context,
-	project *models.Project,
-	workflows map[string]*models.Workflow,
-	definition *models.Workflow,
+	project *model.Project,
+	workflows map[string]*model.Workflow,
+	definition *model.Workflow,
 ) ([]StepResult, error) {
 	definition = definition.DefaultedCopy()
-	if err := models.ValidateWorkflow(definition); err != nil {
+	if err := model.ValidateWorkflow(definition); err != nil {
 		return nil, err
 	}
+	ctx, cancel := withWorkflowTimeout(ctx, definition)
+	defer cancel()
 
 	runCtx := NewRunContext(project, definition)
+	r.bindRunContextExecutors(project, workflows, runCtx)
+	return r.runWithContext(ctx, runCtx, definition)
+}
+
+func (r *Runner) bindRunContextExecutors(
+	project *model.Project,
+	workflows map[string]*model.Workflow,
+	runCtx *block.RunContext,
+) {
+	if runCtx == nil {
+		return
+	}
+
 	runCtx.ExecuteWorkflow = func(
 		ctx context.Context,
-		targetWorkflowUID string,
+		targetWorkflowID string,
 		inputs map[string]string,
 	) (*block.WorkflowRunResult, error) {
-		target, err := findWorkflowDefinition(workflows, targetWorkflowUID)
+		target, err := findWorkflowDefinition(workflows, targetWorkflowID)
 		if err != nil {
 			return nil, err
 		}
+		ctx, cancel := withWorkflowTimeout(ctx, target)
+		defer cancel()
 
 		childCtx := NewRunContext(project, target)
-		childCtx.ExecuteWorkflow = runCtx.ExecuteWorkflow
+		r.bindRunContextExecutors(project, workflows, childCtx)
+		for key, value := range runCtx.Builtins {
+			childCtx.Builtins["Parent."+key] = value
+		}
 		for key, value := range inputs {
 			childCtx.Variables[key] = value
 		}
 
 		initialVariables := cloneStringMap(childCtx.Variables)
+		initialSecretVariables := cloneStringMap(childCtx.SecretVariables)
 		results, err := r.runWithContext(ctx, childCtx, target)
 		secretValues := runCtxSecretValues(childCtx)
-		rawExports := diffStringMap(initialVariables, childCtx.Variables)
+		rawExports := buildWorkflowExports(
+			childCtx,
+			target,
+			initialVariables,
+			childCtx.Variables,
+			initialSecretVariables,
+			childCtx.SecretVariables,
+		)
+		displayExports := make(map[string]string, len(rawExports))
+		for key, value := range rawExports {
+			displayExports[strings.TrimPrefix(key, "@")] = value
+		}
 		runResult := &block.WorkflowRunResult{
-			WorkflowUID: target.ID.String(),
-			Workflow:    target.Name,
-			Steps:       toNestedStepResults(results),
-			Variables:   redact.Strings(cloneStringMap(childCtx.Variables), secretValues),
-			Exports:     redact.Strings(rawExports, secretValues),
-			RawExports:  rawExports,
+			WorkflowID:      target.ID,
+			Workflow:        target.Name,
+			Steps:           toNestedStepResults(results),
+			Variables:       redact.Strings(cloneStringMap(childCtx.Variables), secretValues),
+			SecretVariables: redact.Strings(cloneStringMap(childCtx.SecretVariables), secretValues),
+			Exports:         redact.Strings(displayExports, secretValues),
+			RawExports:      rawExports,
 		}
 		return runResult, err
 	}
-	return r.runWithContext(ctx, runCtx, definition)
+
+	runCtx.ExecuteStep = func(ctx context.Context, step model.Step) (*block.Result, error) {
+		result, _, _, err := r.executeStep(ctx, runCtx, step, true, true)
+		return result, err
+	}
+	runCtx.ExecuteIsolatedStep = func(
+		ctx context.Context,
+		isolated *block.RunContext,
+		step model.Step,
+	) (*block.Result, error) {
+		if isolated == nil {
+			return nil, fmt.Errorf("isolated run context is required")
+		}
+		r.bindRunContextExecutors(project, workflows, isolated)
+		result, _, _, err := r.executeStep(ctx, isolated, step, true, false)
+		return result, err
+	}
+}
+
+func withWorkflowTimeout(ctx context.Context, definition *model.Workflow) (context.Context, context.CancelFunc) {
+	if definition == nil || definition.TimeoutSeconds <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, time.Duration(definition.TimeoutSeconds)*time.Second)
+}
+
+func buildWorkflowExports(
+	runCtx *block.RunContext,
+	definition *model.Workflow,
+	_ map[string]string,
+	_ map[string]string,
+	_ map[string]string,
+	_ map[string]string,
+) map[string]string {
+	if definition != nil && len(definition.Outputs) != 0 {
+		exports := make(map[string]string, len(definition.Outputs))
+		policy := block.ReferencePolicy{
+			Constants:  true,
+			Variables:  true,
+			InlineOnly: true,
+		}
+		for key, value := range definition.Outputs {
+			exports[key] = block.ResolveReferences(runCtx, value, policy)
+		}
+		return exports
+	}
+	return map[string]string{}
 }
 
 func (r *Runner) runWithContext(
 	ctx context.Context,
 	runCtx *block.RunContext,
-	definition *models.Workflow,
+	definition *model.Workflow,
 ) ([]StepResult, error) {
 	definition = definition.DefaultedCopy()
 	results := make([]StepResult, 0, len(definition.Steps))
@@ -130,87 +224,51 @@ func (r *Runner) runWithContext(
 		}
 
 		step := definition.Steps[index]
-		r.observer.OnStepStart(StepStartEvent{
+		r.observer.OnStepStart(model.StepStartEvent{
 			Index: index + 1,
 			Total: len(definition.Steps),
 			Step:  step,
 		})
 
 		if !step.Enabled {
-			r.observer.OnStepFinish(StepFinishEvent{
+			r.observer.OnStepFinish(model.StepFinishEvent{
 				Index:  index + 1,
 				Total:  len(definition.Steps),
 				Step:   step,
-				Status: "skipped",
+				Status: stepStatusSkipped,
 			})
 			results = append(results, StepResult{
 				Index:  index + 1,
 				Name:   step.Name,
-				Type:   step.Type,
-				Status: "skipped",
+				Type:   string(step.Type),
+				Status: stepStatusSkipped,
 			})
 			index++
 			continue
 		}
 
-		block, err := r.registry.MustGet(step.Type)
-		if err != nil {
-			runErr = r.handleStepFailure(
-				ctx,
-				runCtx,
-				definition,
-				&results,
-				index,
-				step,
-				nil,
-				nil,
-				0,
-				err,
-			)
-			break
-		}
-
-		// Resolve @var and $const references in step config before validation and execution.
-		resolved := resolveStepConfig(block, step, runCtx)
-		if err := validateStepCapabilities(block, resolved); err != nil {
-			runErr = r.handleStepFailure(
-				ctx,
-				runCtx,
-				definition,
-				&results,
-				index,
-				step,
-				resolved.Config,
-				nil,
-				0,
-				err,
-			)
-			break
-		}
-
-		if err := block.Validate(resolved); err != nil {
-			runErr = r.handleStepFailure(
-				ctx,
-				runCtx,
-				definition,
-				&results,
-				index,
-				step,
-				resolved.Config,
-				nil,
-				0,
-				err,
-			)
-			break
-		}
-
 		startedAt := time.Now()
-		result, err := block.Execute(ctx, runCtx, resolved)
+		result, resolved, status, err := r.executeStep(ctx, runCtx, step, false, true)
 		duration := time.Since(startedAt)
 		if err != nil {
 			var response any
 			if result != nil {
 				response = result.Output
+			}
+			if step.ContinueOnError {
+				r.handleIgnoredStepFailure(
+					runCtx,
+					definition,
+					&results,
+					index,
+					step,
+					resolved.Config,
+					response,
+					duration,
+					err,
+				)
+				index++
+				continue
 			}
 			runErr = r.handleStepFailure(
 				ctx,
@@ -226,16 +284,29 @@ func (r *Runner) runWithContext(
 			)
 			break
 		}
-
-		runCtx.StepResults[step.Name] = result.Output
-		applyExports(runCtx, resolved, result)
-		applyResponseMapping(runCtx, resolved, result)
+		if status == stepStatusSkipped {
+			var response any
+			if result != nil {
+				response = result.Output
+			}
+			r.observer.OnStepFinish(model.StepFinishEvent{
+				Index:    index + 1,
+				Total:    len(definition.Steps),
+				Step:     step,
+				Status:   stepStatusSkipped,
+				Duration: duration,
+				Response: redactValue(runCtx, response),
+			})
+			results = append(results, newStepResult(index, step, stepStatusSkipped, redactValue(runCtx, response), ""))
+			index++
+			continue
+		}
 
 		if result.Jump != nil {
 			targetIdx := -1
 			found := false
-			if result.Jump.TargetStepUID != "" {
-				targetIdx, found = stepIDIndex[result.Jump.TargetStepUID]
+			if result.Jump.TargetStepID != "" {
+				targetIdx, found = stepIDIndex[result.Jump.TargetStepID]
 			}
 			if !found {
 				runErr = r.handleStepFailure(
@@ -248,20 +319,20 @@ func (r *Runner) runWithContext(
 					resolved.Config,
 					result.Output,
 					duration,
-					fmt.Errorf("goto target %q not found", result.Jump.TargetStepUID),
+					fmt.Errorf("goto target %q not found", result.Jump.TargetStepID),
 				)
 				break
 			}
-			r.observer.OnStepFinish(StepFinishEvent{
+			r.observer.OnStepFinish(model.StepFinishEvent{
 				Index:    index + 1,
 				Total:    len(definition.Steps),
 				Step:     step,
-				Status:   "ok",
+				Status:   stepStatusOK,
 				Duration: duration,
 				Request:  redactMap(runCtx, resolved.Config),
 				Response: redactValue(runCtx, result.Output),
 			})
-			results = append(results, newStepResult(index, step, "ok", redactValue(runCtx, result.Output), ""))
+			results = append(results, newStepResult(index, step, stepStatusOK, redactValue(runCtx, result.Output), ""))
 			if result.Jump.WaitSeconds > 0 {
 				timer := time.NewTimer(time.Duration(result.Jump.WaitSeconds) * time.Second)
 				select {
@@ -275,33 +346,77 @@ func (r *Runner) runWithContext(
 			continue
 		}
 
-		r.observer.OnStepFinish(StepFinishEvent{
+		r.observer.OnStepFinish(model.StepFinishEvent{
 			Index:    index + 1,
 			Total:    len(definition.Steps),
 			Step:     step,
-			Status:   "ok",
+			Status:   stepStatusOK,
 			Duration: duration,
 			Request:  redactMap(runCtx, resolved.Config),
 			Response: redactValue(runCtx, result.Output),
 		})
-		results = append(results, newStepResult(index, step, "ok", redactValue(runCtx, result.Output), ""))
+		results = append(results, newStepResult(index, step, stepStatusOK, redactValue(runCtx, result.Output), ""))
 		index++
 	}
 
 	return results, runErr
 }
 
-func findWorkflowDefinition(workflows map[string]*models.Workflow, target string) (*models.Workflow, error) {
+func (r *Runner) executeStep(
+	ctx context.Context,
+	runCtx *block.RunContext,
+	step model.Step,
+	nested bool,
+	applyAssignments bool,
+) (*block.Result, model.Step, string, error) {
+	if result, status, err := evaluateStepCondition(runCtx, step); result != nil || err != nil {
+		return result, step, status, err
+	}
+
+	blk, err := r.registry.Get(step.Type)
+	if err != nil {
+		return nil, step, "", err
+	}
+
+	resolved := resolveStepConfig(blk, step, runCtx)
+	if err := validateStepCapabilities(blk, resolved); err != nil {
+		return nil, resolved, "", err
+	}
+	if err := blk.Validate(resolved); err != nil {
+		return nil, resolved, "", err
+	}
+
+	result, err := blk.Execute(ctx, runCtx, resolved)
+	if err != nil {
+		return result, resolved, "", err
+	}
+	if nested && result != nil && result.Jump != nil {
+		return result, resolved, "", fmt.Errorf("nested block type %q cannot trigger workflow jumps", step.Type)
+	}
+
+	if result != nil {
+		runCtx.StepResults[step.Name] = result.Output
+		if applyAssignments {
+			if err := applyResponseExtractions(runCtx, resolved, result); err != nil {
+				return result, resolved, "", err
+			}
+		}
+	}
+
+	return result, resolved, stepStatusOK, nil
+}
+
+func findWorkflowDefinition(workflows map[string]*model.Workflow, target string) (*model.Workflow, error) {
 	if len(workflows) == 0 {
 		return nil, fmt.Errorf("workflow %q not found", target)
 	}
 	for _, wf := range workflows {
-		if wf != nil && wf.ID.String() == target {
+		if wf != nil && wf.ID == target {
 			return wf, nil
 		}
 	}
 	return nil, fmt.Errorf(
-		"workflow %q not found; target_workflow_uid expects a workflow UUID, available: %s",
+		"workflow %q not found; available workflow ids: %s",
 		target,
 		describeAvailableWorkflows(workflows),
 	)
@@ -318,7 +433,7 @@ func cloneStringMap(src map[string]string) map[string]string {
 	return dst
 }
 
-func describeAvailableWorkflows(workflows map[string]*models.Workflow) string {
+func describeAvailableWorkflows(workflows map[string]*model.Workflow) string {
 	if len(workflows) == 0 {
 		return "none"
 	}
@@ -328,26 +443,10 @@ func describeAvailableWorkflows(workflows map[string]*models.Workflow) string {
 		if workflow == nil {
 			continue
 		}
-		descriptions = append(descriptions, fmt.Sprintf("%s -> %s", key, workflow.ID.String()))
+		descriptions = append(descriptions, fmt.Sprintf("%s -> %s", key, workflow.ID))
 	}
 	slices.Sort(descriptions)
 	return strings.Join(descriptions, ", ")
-}
-
-func diffStringMap(before, after map[string]string) map[string]string {
-	if len(after) == 0 {
-		return nil
-	}
-	diff := make(map[string]string)
-	for key, value := range after {
-		if previous, ok := before[key]; !ok || previous != value {
-			diff[key] = value
-		}
-	}
-	if len(diff) == 0 {
-		return nil
-	}
-	return diff
 }
 
 func toNestedStepResults(results []StepResult) []block.WorkflowStepResult {
@@ -368,20 +467,20 @@ func toNestedStepResults(results []StepResult) []block.WorkflowStepResult {
 	return nested
 }
 
-func buildStepIDIndex(steps []models.Step) map[string]int {
+func buildStepIDIndex(steps []model.Step) map[string]int {
 	idx := make(map[string]int, len(steps))
 	for i, s := range steps {
-		if s.ID.String() != "" {
-			idx[s.ID.String()] = i
+		if s.ID != "" {
+			idx[s.ID] = i
 		}
 	}
 	return idx
 }
 
-// resolveStepConfig returns a copy of step with @var and $const references
+// resolveStepConfig returns a copy of step with $var and @name references
 // in config string values replaced using the current RunContext.
-// The response_mapping and outputs keys are left unmodified.
-func resolveStepConfig(blk block.Block, step models.Step, runCtx *block.RunContext) models.Step {
+// Response extraction metadata is left unmodified.
+func resolveStepConfig(blk block.Block, step model.Step, runCtx *block.RunContext) model.Step {
 	resolved := step
 	resolved.Config = resolveConfigMap(step.Config, allowedReferencePolicies(blk), runCtx)
 	return resolved
@@ -397,8 +496,8 @@ func resolveConfigMap(
 	}
 	result := make(map[string]any, len(m))
 	for k, v := range m {
-		// Leave output mapping metadata unmodified — these are variable names, not values.
-		if k == "response_mapping" || k == "outputs" {
+		// Leave assignment metadata unmodified — these are variable names and source paths, not values.
+		if k == "assign" {
 			result[k] = v
 			continue
 		}
@@ -415,7 +514,7 @@ func resolveConfigMap(
 func resolveConfigValue(v any, policy block.ReferencePolicy, runCtx *block.RunContext) any {
 	switch typed := v.(type) {
 	case string:
-		return resolveRefs(typed, policy, runCtx)
+		return block.ResolveReferences(runCtx, typed, policy)
 	case map[string]any:
 		if !policy.InlineOnly {
 			return typed
@@ -439,45 +538,6 @@ func resolveConfigValue(v any, policy block.ReferencePolicy, runCtx *block.RunCo
 	}
 }
 
-func resolveRefs(s string, policy block.ReferencePolicy, runCtx *block.RunContext) string {
-	if runCtx == nil {
-		return s
-	}
-	var builder strings.Builder
-	builder.Grow(len(s))
-
-	for i := 0; i < len(s); {
-		if !isReferencePrefix(s[i]) {
-			builder.WriteByte(s[i])
-			i++
-			continue
-		}
-
-		prefix := s[i]
-		start := i + 1
-		end := start
-		for end < len(s) && isReferenceNameChar(s[end]) {
-			end++
-		}
-		if start == end {
-			builder.WriteByte(s[i])
-			i++
-			continue
-		}
-
-		name := s[start:end]
-		if resolved, ok := lookupReference(prefix, name, policy, runCtx); ok {
-			builder.WriteString(resolved)
-		} else {
-			builder.WriteByte(prefix)
-			builder.WriteString(name)
-		}
-		i = end
-	}
-
-	return builder.String()
-}
-
 func allowedReferencePolicies(blk block.Block) map[string]block.ReferencePolicy {
 	provider, ok := blk.(block.ReferencePolicyProvider)
 	if !ok {
@@ -497,61 +557,103 @@ func allowedReferencePolicies(blk block.Block) map[string]block.ReferencePolicy 
 	return result
 }
 
-func validateStepCapabilities(blk block.Block, step models.Step) error {
-	if step.Config["response_mapping"] != nil {
+func validateStepCapabilities(blk block.Block, step model.Step) error {
+	if hasExtractionConfig(step.Config) {
 		provider, ok := blk.(block.ResponseMappingProvider)
 		if !ok || !provider.SupportsResponseMapping() {
-			return fmt.Errorf("block type %q does not support response mapping", step.Type)
+			return fmt.Errorf("block type %q does not support assign mappings", string(step.Type))
 		}
 	}
 	return nil
 }
 
-// applyExports writes block exports into RunContext.Variables.
-func applyExports(runCtx *block.RunContext, step models.Step, result *block.Result) {
+func evaluateStepCondition(
+	runCtx *block.RunContext,
+	step model.Step,
+) (*block.Result, string, error) {
+	if step.Condition == nil {
+		return nil, "", nil
+	}
+
+	condition := resolveStepCondition(runCtx, step.Condition)
+	variableName, actual, _ := block.ResolveVariableExpression(runCtx, condition.Variable)
+	if variableName == "" {
+		variableName = condition.Variable
+	}
+
+	matched, err := condition2.Evaluate(actual, condition.Operator, condition.Expected)
+	if err != nil {
+		return &block.Result{Output: map[string]any{
+			"condition": map[string]any{
+				"variable": variableName,
+				"actual":   actual,
+				"operator": condition.Operator,
+				"expected": condition.Expected,
+				"matched":  false,
+			},
+		}}, "", err
+	}
+
+	if matched {
+		return nil, "", nil
+	}
+
+	return &block.Result{Output: map[string]any{
+		"condition": map[string]any{
+			"variable": variableName,
+			"actual":   actual,
+			"operator": condition.Operator,
+			"expected": condition.Expected,
+			"matched":  false,
+		},
+	}}, stepStatusSkipped, nil
+}
+
+func resolveStepCondition(runCtx *block.RunContext, condition *model.Condition) model.Condition {
+	if condition == nil {
+		return model.Condition{}
+	}
+
+	policy := block.ReferencePolicy{
+		Constants:  true,
+		Variables:  true,
+		InlineOnly: true,
+	}
+
+	return model.Condition{
+		Variable: strings.TrimSpace(condition.Variable),
+		Operator: strings.TrimSpace(condition.Operator),
+		Expected: block.ResolveReferences(runCtx, condition.Expected, policy),
+	}
+}
+
+// applyResponseExtractions writes selected step outputs into the runtime namespace.
+func applyResponseExtractions(runCtx *block.RunContext, step model.Step, result *block.Result) error {
+	if result == nil {
+		return nil
+	}
+	updates := map[string]string{}
+	for key, value := range extractAssignedVariables(result, step.Config) {
+		updates[key] = value
+	}
+	if len(updates) != 0 {
+		return applyRuntimeAssignments(runCtx, updates)
+	}
 	if len(result.Exports) == 0 {
-		return
-	}
-	if mapping := decodeOutputsMapping(step.Config["outputs"]); mapping != nil {
-		for varName, exportKey := range mapping {
-			if val, ok := result.Exports[exportKey]; ok {
-				runCtx.Variables[varName] = val
-			}
-		}
-		return
-	}
-	for k, v := range result.Exports {
-		runCtx.Variables[k] = v
-	}
-}
-
-// decodeOutputsMapping coerces an "outputs" config value into map[string]string.
-func decodeOutputsMapping(raw any) map[string]string {
-	switch v := raw.(type) {
-	case map[string]string:
-		return v
-	case map[string]any:
-		m := make(map[string]string, len(v))
-		for key, val := range v {
-			m[key] = fmt.Sprint(val)
-		}
-		return m
-	case nil:
-		return nil
-	default:
 		return nil
 	}
-}
-
-// applyResponseMapping extracts values from result.Output using dot-path rules.
-func applyResponseMapping(runCtx *block.RunContext, step models.Step, result *block.Result) {
-	if result.Output == nil {
-		return
+	implicitAssignments := make(map[string]string, len(result.Exports))
+	for key, value := range result.Exports {
+		switch {
+		case strings.HasPrefix(key, "$"):
+			implicitAssignments[key] = value
+		case strings.HasPrefix(key, "@"):
+			implicitAssignments["$"+strings.TrimPrefix(key, "@")] = value
+		default:
+			implicitAssignments["$"+key] = value
+		}
 	}
-	vars := ExtractMappedVariables(result.Output, step.Config["response_mapping"])
-	for k, v := range vars {
-		runCtx.Variables[k] = v
-	}
+	return applyRuntimeAssignments(runCtx, implicitAssignments)
 }
 
 type responseMappingEntry struct {
@@ -559,7 +661,10 @@ type responseMappingEntry struct {
 	Path string
 }
 
-func decodeResponseMapping(raw any) []responseMappingEntry {
+func decodeResponseEntries(raw any) []responseMappingEntry {
+	if entries := decodeResponseShorthand(raw); len(entries) != 0 {
+		return entries
+	}
 	arr, ok := raw.([]any)
 	if !ok {
 		return nil
@@ -580,29 +685,61 @@ func decodeResponseMapping(raw any) []responseMappingEntry {
 	return entries
 }
 
+func decodeResponseShorthand(raw any) []responseMappingEntry {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	entries := make([]responseMappingEntry, 0, len(m))
+	for target, path := range m {
+		key := strings.TrimSpace(target)
+		path := strings.TrimSpace(fmt.Sprint(path))
+		if key == "" || path == "" {
+			continue
+		}
+		entries = append(entries, responseMappingEntry{Key: key, Path: path})
+	}
+	return entries
+}
+
+func decodeExtractionConfig(config map[string]any, field string) []responseMappingEntry {
+	if config == nil {
+		return nil
+	}
+	entries := decodeResponseEntries(config[field])
+	if len(entries) == 0 {
+		return nil
+	}
+	return entries
+}
+
+func hasExtractionConfig(config map[string]any) bool {
+	return len(decodeExtractionConfig(config, "assign")) != 0
+}
+
 func (r *Runner) handleStepFailure(
 	ctx context.Context,
 	runCtx *block.RunContext,
-	definition *models.Workflow,
+	definition *model.Workflow,
 	results *[]StepResult,
 	index int,
-	step models.Step,
+	step model.Step,
 	request map[string]any,
 	response any,
 	duration time.Duration,
 	err error,
 ) error {
-	r.observer.OnStepFinish(StepFinishEvent{
+	r.observer.OnStepFinish(model.StepFinishEvent{
 		Index:    index + 1,
 		Total:    len(definition.Steps),
 		Step:     step,
-		Status:   "failed",
+		Status:   stepStatusFailed,
 		Duration: duration,
 		Request:  redactMap(runCtx, request),
 		Response: redactValue(runCtx, response),
 		Error:    fmt.Errorf("%s", redactError(runCtx, err)),
 	})
-	*results = append(*results, newStepResult(index, step, "failed", nil, redactError(runCtx, err)))
+	*results = append(*results, newStepResult(index, step, stepStatusFailed, nil, redactError(runCtx, err)))
 
 	runErr := err
 	if chainErr := runErrorChain(ctx, r, runCtx, definition, results, index, step, err); chainErr != nil {
@@ -612,11 +749,41 @@ func (r *Runner) handleStepFailure(
 	return runErr
 }
 
-func newStepResult(index int, step models.Step, status string, output any, err string) StepResult {
+func (r *Runner) handleIgnoredStepFailure(
+	runCtx *block.RunContext,
+	definition *model.Workflow,
+	results *[]StepResult,
+	index int,
+	step model.Step,
+	request map[string]any,
+	response any,
+	duration time.Duration,
+	err error,
+) {
+	r.observer.OnStepFinish(model.StepFinishEvent{
+		Index:    index + 1,
+		Total:    len(definition.Steps),
+		Step:     step,
+		Status:   stepStatusIgnoredError,
+		Duration: duration,
+		Request:  redactMap(runCtx, request),
+		Response: redactValue(runCtx, response),
+		Error:    fmt.Errorf("%s", redactError(runCtx, err)),
+	})
+	*results = append(*results, newStepResult(
+		index,
+		step,
+		stepStatusIgnoredError,
+		redactValue(runCtx, response),
+		redactError(runCtx, err),
+	))
+}
+
+func newStepResult(index int, step model.Step, status string, output any, err string) StepResult {
 	return StepResult{
 		Index:  index + 1,
 		Name:   step.Name,
-		Type:   step.Type,
+		Type:   string(step.Type),
 		Status: status,
 		Output: output,
 		Error:  err,
@@ -627,7 +794,11 @@ func runCtxSecretValues(runCtx *block.RunContext) []string {
 	if runCtx == nil {
 		return nil
 	}
-	return redact.SecretValues(runCtx.Secrets)
+	secrets := cloneStringMap(runCtx.Secrets)
+	for key, value := range runCtx.SecretVariables {
+		secrets[key] = value
+	}
+	return redact.SecretValues(secrets)
 }
 
 func redactError(runCtx *block.RunContext, err error) string {
@@ -649,39 +820,52 @@ func redactValue(runCtx *block.RunContext, value any) any {
 	return redact.Value(value, runCtxSecretValues(runCtx))
 }
 
-func isReferencePrefix(ch byte) bool {
-	return ch == '@' || ch == '$'
-}
-
-func isReferenceNameChar(ch byte) bool {
-	return ch == '_' || ch == '-' ||
-		(ch >= 'a' && ch <= 'z') ||
-		(ch >= 'A' && ch <= 'Z') ||
-		(ch >= '0' && ch <= '9')
-}
-
-func lookupReference(
-	prefix byte,
-	name string,
-	policy block.ReferencePolicy,
-	runCtx *block.RunContext,
-) (string, bool) {
-	switch prefix {
-	case '@':
-		if !policy.Variables {
-			return "", false
-		}
-		value, ok := runCtx.Variables[name]
-		return value, ok
-	case '$':
-		if !policy.Constants {
-			return "", false
-		}
-		value, ok := runCtx.Constants[name]
-		return value, ok
-	default:
-		return "", false
+func applyRuntimeAssignments(runCtx *block.RunContext, assignments map[string]string) error {
+	if runCtx == nil || len(assignments) == 0 {
+		return nil
 	}
+
+	for target := range assignments {
+		if err := validateRuntimeTarget(runCtx, target); err != nil {
+			return err
+		}
+	}
+	for target, value := range assignments {
+		name := parseRuntimeTarget(target)
+		if _, ok := runCtx.SecretVariables[name]; ok {
+			runCtx.SecretVariables[name] = value
+			continue
+		}
+		runCtx.Variables[name] = value
+	}
+	return nil
+}
+
+func validateRuntimeTarget(runCtx *block.RunContext, target string) error {
+	trimmed := strings.TrimSpace(target)
+	if trimmed == "" {
+		return fmt.Errorf("runtime target is required")
+	}
+	if strings.HasPrefix(trimmed, "@") {
+		name := strings.TrimSpace(strings.TrimPrefix(trimmed, "@"))
+		return fmt.Errorf("runtime target must use $%s, not @%s", name, name)
+	}
+	if !strings.HasPrefix(trimmed, "$") {
+		return fmt.Errorf("runtime target must start with $")
+	}
+	name := parseRuntimeTarget(trimmed)
+	if _, ok := runCtx.Constants[name]; ok {
+		return fmt.Errorf("cannot write to read-only constant @%s", name)
+	}
+	if _, ok := runCtx.Secrets[name]; ok {
+		return fmt.Errorf("cannot write to read-only secret @%s", name)
+	}
+	return nil
+}
+
+func parseRuntimeTarget(target string) string {
+	trimmed := strings.TrimSpace(target)
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "$"))
 }
 
 func resolveKey(m map[string]any, key string) (string, bool) {
@@ -716,19 +900,18 @@ func readMappedValue(obj any, path string) (any, bool) {
 	return current, true
 }
 
-// ExtractMappedVariables extracts response-mapping variable values from output.
-func ExtractMappedVariables(output any, rawMapping any) map[string]string {
-	if output == nil {
+// extractAssignedVariables extracts configured values into runtime variables.
+func extractAssignedVariables(result *block.Result, config map[string]any) map[string]string {
+	if result == nil {
 		return nil
 	}
-	mappings := decodeResponseMapping(rawMapping)
+	mappings := decodeExtractionConfig(config, "assign")
 	if len(mappings) == 0 {
 		return nil
 	}
-	result := make(map[string]string, len(mappings))
+	vars := make(map[string]string, len(mappings))
 	for _, m := range mappings {
-		path := strings.TrimPrefix(m.Path, "response.")
-		value, ok := readMappedValue(output, path)
+		value, ok := readAssignedValue(result, m.Path)
 		if !ok {
 			continue
 		}
@@ -743,77 +926,123 @@ func ExtractMappedVariables(output any, rawMapping any) map[string]string {
 			}
 			strVal = string(b)
 		}
-		result[m.Key] = strVal
+		vars[m.Key] = strVal
 	}
-	if len(result) == 0 {
+	if len(vars) == 0 {
 		return nil
 	}
-	return result
+	return vars
 }
 
-// MarshalResults formats step results as indented JSON.
-func MarshalResults(results []StepResult) (string, error) {
-	body, err := json.MarshalIndent(results, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshal workflow results: %w", err)
+func readAssignedValue(result *block.Result, path string) (any, bool) {
+	path = strings.TrimSpace(path)
+	if strings.HasPrefix(path, "outputs.") {
+		return readOutputValue(result, path)
 	}
-	return string(body), nil
+	if strings.HasPrefix(path, "body.") {
+		return readBodyValue(result, strings.TrimPrefix(path, "body."))
+	}
+	path = strings.TrimPrefix(strings.TrimSpace(path), "response.")
+	if path == "" {
+		return nil, false
+	}
+	if strings.HasPrefix(path, "output.") {
+		return readMappedValue(result.Output, strings.TrimPrefix(path, "output."))
+	}
+	return readMappedValue(result.Output, path)
+}
+
+func readBodyValue(result *block.Result, path string) (any, bool) {
+	if result == nil {
+		return nil, false
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		if outputMap, ok := result.Output.(map[string]any); ok {
+			if body, found := outputMap["body"]; found {
+				return body, true
+			}
+		}
+		return result.Output, result.Output != nil
+	}
+	if outputMap, ok := result.Output.(map[string]any); ok {
+		if body, found := outputMap["body"]; found {
+			return readMappedValue(body, path)
+		}
+	}
+	return readMappedValue(result.Output, path)
+}
+
+func readOutputValue(result *block.Result, path string) (string, bool) {
+	path = strings.TrimPrefix(strings.TrimSpace(path), "outputs.")
+	if path == "" {
+		return "", false
+	}
+	value, ok := result.Exports[path]
+	return value, ok
 }
 
 func runErrorChain(
 	ctx context.Context,
 	r *Runner,
 	runCtx *block.RunContext,
-	definition *models.Workflow,
+	definition *model.Workflow,
 	results *[]StepResult,
 	failedIndex int,
-	failedStep models.Step,
+	failedStep model.Step,
 	failedErr error,
 ) error {
-	runCtx.Variables[ErrorVarMessage] = failedErr.Error()
-	runCtx.Variables[ErrorVarBlockName] = failedStep.Name
-	runCtx.Variables[ErrorVarBlockType] = failedStep.Type
-	runCtx.Variables[ErrorVarBlockIndex] = fmt.Sprintf("%d", failedIndex+1)
+	blockID := failedStep.BlockID
+	if blockID == "" {
+		blockID = failedStep.Name
+	}
+	runCtx.Builtins[ErrorVarMessage] = failedErr.Error()
+	runCtx.Builtins[ErrorVarBlockID] = blockID
+	runCtx.Builtins[ErrorVarBlockName] = failedStep.Name
+	runCtx.Builtins[ErrorVarBlockType] = string(failedStep.Type)
+	runCtx.Builtins[ErrorVarBlockIndex] = fmt.Sprintf("%d", failedIndex+1)
 
 	if len(definition.OnErrorSteps) == 0 {
 		return nil
 	}
 
 	for index, step := range definition.OnErrorSteps {
-		block, err := r.registry.MustGet(step.Type)
+		stepBlock, err := r.registry.Get(step.Type)
 		if err != nil {
 			*results = append(*results, newStepResult(index, step, "error-handler-failed", nil, redactError(runCtx, err)))
 			return err
 		}
-		resolved := resolveStepConfig(block, step, runCtx)
-		if err := validateStepCapabilities(block, resolved); err != nil {
+		resolved := resolveStepConfig(stepBlock, step, runCtx)
+		if err := validateStepCapabilities(stepBlock, resolved); err != nil {
 			*results = append(*results, newStepResult(index, step, "error-handler-failed", nil, redactError(runCtx, err)))
 			return err
 		}
-		if err := block.Validate(resolved); err != nil {
+		if err := stepBlock.Validate(resolved); err != nil {
 			*results = append(*results, newStepResult(index, step, "error-handler-failed", nil, redactError(runCtx, err)))
 			return err
 		}
-		result, err := block.Execute(ctx, runCtx, resolved)
+		result, err := stepBlock.Execute(ctx, runCtx, resolved)
 		if err != nil {
 			*results = append(*results, newStepResult(index, step, "error-handler-failed", nil, redactError(runCtx, err)))
 			return err
 		}
 
 		runCtx.StepResults["onError:"+step.Name] = result.Output
-		applyExports(runCtx, resolved, result)
-		applyResponseMapping(runCtx, resolved, result)
+		if err := applyResponseExtractions(runCtx, resolved, result); err != nil {
+			*results = append(*results, newStepResult(index, step, "error-handler-failed", nil, redactError(runCtx, err)))
+			return err
+		}
 		*results = append(*results, newStepResult(index, step, "error-handler-ok", redactValue(runCtx, result.Output), ""))
 	}
 	return nil
 }
 
-func containsWorkflowStep(definition *models.Workflow) bool {
+func containsWorkflowStep(definition *model.Workflow) bool {
 	if definition == nil {
 		return false
 	}
 	for _, step := range definition.Steps {
-		if step.Type == "workflow" {
+		if step.Type == model.BlockType("workflow") {
 			return true
 		}
 	}

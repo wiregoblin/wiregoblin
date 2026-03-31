@@ -1,135 +1,189 @@
-id: test
-name: Test
+id: "example1"
+name: "Example"
 version: 1
 
 constants:
-  grpc_host: demo.connectrpc.com:443
-  users_url: http://127.0.0.1:18080/users/1
-  openai_base_url: http://127.0.0.1:18080/v1
-  telegram_base_url: http://127.0.0.1:18080
-  postgres_dsn: postgres://wiregoblin:wiregoblin@127.0.0.1:15432/wiregoblin?sslmode=disable
-  redis_address: 127.0.0.1:16379
-  container_image: alpine:3.20
-  mock_openai_token: demo-openai-token
-  mock_telegram_token: demo-telegram-token
+  grpc_host: "demo.connectrpc.com:443"
+  users_url: "http://127.0.0.1:18080/users/1"
+  users_create_url: "http://127.0.0.1:18080/users"
+  openai_base_url: "http://127.0.0.1:18080/v1"
+  telegram_base_url: "http://127.0.0.1:18080"
+  postgres_dsn: "postgres://wiregoblin:wiregoblin@127.0.0.1:15432/wiregoblin?sslmode=disable"
+  redis_address: "127.0.0.1:16379"
+  smtp_host: "127.0.0.1"
+  # constants are string-valued in WireGoblin; port fields parse these into integers at block decode time
+  smtp_port: "13025"
+  smtp_from: "noreply@example.com"
+  imap_host: "127.0.0.1"
+  imap_port: "13143"
+  imap_mailbox: "INBOX"
+  mail_username: "test1@localhost"
+  mail_password: "test1@localhost"
+  mail_to: "test1@localhost"
+  container_image: "alpine:3.20"
+  mock_openai_token: "demo-openai-token"
+  mock_telegram_token: "demo-telegram-token"
   mock_telegram_chat_id: "100100"
 
 secrets:
-  email: ${EMAIL}
-  password: ${PASSWORD}
-  openai_token: ${OPENAI_API_KEY}
-  telegram_token: ${TELEGRAM_BOT_TOKEN}
-  telegram_chat_id: ${TELEGRAM_CHAT_ID}
+  email: "${EMAIL}"
+  password: "${PASSWORD}"
+  openai_token: "${OPENAI_API_KEY}"
+  telegram_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"
 
 variables:
-  retry_state: done
-  run_label: bootstrap
+  retry_state: "done"
+  run_label: "bootstrap"
 
 workflows:
   http_example:
-    name: HTTP Example
+    name: "HTTP Example"
     blocks:
-      request1:
-        name: Get User
-        type: http
-        method: GET
-        url: "$users_url"
-        response:
-          body.id: "@user_id"
-          body.name: "@user_name"
-          body.role: "@user_role"
-        outputs:
-          http_status: statusCode
+      - id: "request1"
+        name: "Get User"
+        type: "http"
+        method: "GET"
+        url: "@users_url"
+        assign:
+          $user_id: "body.id"
+          $user_name: "body.name"
+          $user_role: "body.role"
+          $http_status: "outputs.statusCode"
+          $http_response_time_ms: "outputs.responseTimeMs"
 
-      assert_http_status:
-        name: Assert HTTP Status
-        type: assert
-        variable: http_status
+      - id: "assert_http_status"
+        name: "Assert HTTP Status"
+        type: "assert"
+        variable: "$http_status"
         operator: "="
         expected: "200"
         error_message: "HTTP example did not return 200"
 
-  grpc_example:
-    name: gRPC Example
-    blocks:
-      say:
-        name: Say
-        type: grpc
-        address: "$grpc_host"
-        tls: true
-        method: /connectrpc.eliza.v1.ElizaService/Say
-        request: '{"sentence":"I feel happy."}'
-        metadata:
-          x-request-id: example-request
-        response_mapping:
-          - key: eliza_reply
-            path: sentence
+      - id: "log_http_result"
+        name: "Log HTTP Result"
+        type: "log"
+        level: "info"
+        message: "Fetched user $user_id with status $http_status"
 
-      assert_reply:
-        name: Assert Reply
-        type: assert
-        variable: eliza_reply
+      - id: "assert_http_response_time"
+        name: "Assert HTTP Response Time"
+        type: "assert"
+        variable: "$http_response_time_ms"
+        operator: "<"
+        expected: "5000"
+        error_message: "HTTP example exceeded expected response time budget"
+
+  grpc_example:
+    name: "gRPC Example"
+    blocks:
+      - id: "say"
+        name: "Say"
+        type: "grpc"
+        address: "@grpc_host"
+        tls: true
+        method: "/connectrpc.eliza.v1.ElizaService/Say"
+        request: '{"sentence":"I feel happy."}'
+        # For bytes fields, use base64: inside the JSON string, for example:
+        # request: '{"payload":"base64:SGVsbG8="}'
+        metadata:
+          x-request-id: "example-request"
+        assign:
+          $eliza_reply: "body.sentence"
+          $grpc_response_time_ms: "outputs.responseTimeMs"
+
+      - id: "assert_reply"
+        name: "Assert Reply"
+        type: "assert"
+        variable: "$eliza_reply"
         operator: "!="
         expected: ""
-        error_message: "gRPC response_mapping did not populate eliza_reply"
+        error_message: "gRPC response did not populate eliza_reply"
+
+      - id: "assert_grpc_response_time"
+        name: "Assert gRPC Response Time"
+        type: "assert"
+        variable: "$grpc_response_time_ms"
+        operator: "<"
+        expected: "5000"
+        error_message: "gRPC example exceeded expected response time budget"
+
+  http_post_example:
+    name: "HTTP POST Example"
+    blocks:
+      - id: "create_user"
+        name: "Create User"
+        type: "http"
+        method: "POST"
+        url: "@users_create_url"
+        body: '{"name":"Alice Goblin","role":"maintainer"}'
+        assign:
+          $created_user_id: "body.id"
+          $created_user_name: "body.name"
+          $create_user_status: "outputs.statusCode"
+
+      - id: "assert_create_status"
+        name: "Assert Create Status"
+        type: "assert"
+        variable: "$create_user_status"
+        operator: "="
+        expected: "201"
+        error_message: "HTTP POST example did not return 201"
+
+      - id: "assert_created_user"
+        name: "Assert Created User"
+        type: "assert"
+        variable: "$created_user_name"
+        operator: "="
+        expected: "Alice Goblin"
+        error_message: "HTTP POST example did not return the created user"
 
   local_stack_example:
-    name: Local Stack Example
+    name: "Local Stack Example"
     constants:
-      local_run_id: local-stack-user
+      local_run_id: "local-stack-user"
     variables:
-      run_label: local-stack
-      retry_state: done
+      run_label: "local-stack"
+      retry_state: "done"
     blocks:
-      init_context:
-        name: Init Context
-        type: setvars
-        assignments:
-          - variable: run_label
-            value: local-stack
-          - variable: retry_state
-            value: done
-
-      fetch_user:
-        name: Fetch User
-        type: http
-        method: GET
-        url: "$users_url"
+      - id: "fetch_user"
+        name: "Fetch User"
+        type: "http"
+        method: "GET"
+        url: "@users_url"
         headers:
-          X-Workflow-Run: "@run_label"
-        response:
-          body.id: "@user_id"
-          body.name: "@user_name"
-          body.role: "@user_role"
-        outputs:
-          user_http_status: statusCode
+          X-Workflow-Run: "$run_label"
+        assign:
+          $user_id: "body.id"
+          $user_name: "body.name"
+          $user_role: "body.role"
+          $user_http_status: "outputs.statusCode"
 
-      cache_user_name:
-        name: Cache User Name
-        type: redis
-        address: "$redis_address"
-        command: SET
+      - id: "cache_user_name"
+        name: "Cache User Name"
+        type: "redis"
+        address: "@redis_address"
+        command: "SET"
         args:
-          - workflow:user_name
-          - "@user_name"
-        outputs:
-          redis_write_result: result
+          - "workflow:user_name"
+          - "$user_name"
+        assign:
+          $redis_write_result: "outputs.result"
 
-      read_cached_user_name:
-        name: Read Cached User Name
-        type: redis
-        address: "$redis_address"
-        command: GET
+      - id: "read_cached_user_name"
+        name: "Read Cached User Name"
+        type: "redis"
+        address: "@redis_address"
+        command: "GET"
         args:
-          - workflow:user_name
-        response_mapping:
-          - key: cached_user_name
-            path: result
+          - "workflow:user_name"
+        assign:
+          $cached_user_name: "body.result"
 
-      prepare_postgres:
-        name: Prepare Postgres
-        type: postgres
-        dsn: "$postgres_dsn"
+      - id: "prepare_postgres"
+        name: "Prepare Postgres"
+        type: "postgres"
+        dsn: "@postgres_dsn"
         query: >
           create table if not exists workflow_runs (
             id text primary key,
@@ -137,178 +191,577 @@ workflows:
             status text not null
           )
 
-      seed_postgres:
-        name: Seed Postgres
-        type: postgres
-        dsn: "$postgres_dsn"
+      - id: "seed_postgres"
+        name: "Seed Postgres"
+        type: "postgres"
+        dsn: "@postgres_dsn"
         query: >
           insert into workflow_runs (id, user_name, status)
-          values ('local-stack-user', 'Alice Goblin', 'cached')
+          values ($1, $2, $3)
           on conflict (id) do update
           set user_name = excluded.user_name, status = excluded.status
+        params:
+          - "@local_run_id"
+          - "Alice Goblin"
+          - "cached"
 
-      read_postgres:
-        name: Read Postgres
-        type: postgres
-        dsn: "$postgres_dsn"
+      - id: "read_postgres"
+        name: "Read Postgres"
+        type: "postgres"
+        dsn: "@postgres_dsn"
         query: >
-          select id from workflow_runs where id = 'local-stack-user'
-        response_mapping:
-          - key: postgres_row_count
-            path: rowCount
+          select 1 from workflow_runs where id = $1
+        params:
+          - "@local_run_id"
+        assign:
+          $postgres_row_count: "outputs.rowCount"
 
-      short_delay:
-        name: Short Delay
-        type: delay
+      - id: "short_delay"
+        name: "Short Delay"
+        type: "delay"
         milliseconds: 25
 
-      run_container:
-        name: Run Container
-        type: container
-        image: "$container_image"
+      - id: "run_container"
+        name: "Run Container"
+        type: "container"
+        image: "@container_image"
         command: printf '%s' "$MESSAGE"
         env:
-          MESSAGE: "@cached_user_name"
-        outputs:
-          container_stdout: stdout
-          container_exit_code: exitCode
+          MESSAGE: "$cached_user_name"
+        assign:
+          $container_stdout: "body.stdout"
+          $container_exit_code: "outputs.exitCode"
 
-      local_openai:
-        name: Local OpenAI Mock
-        type: openai
-        base_url: "$openai_base_url"
-        token: "$mock_openai_token"
-        model: gpt-4.1-mini
-        system_prompt: You are a concise mock assistant.
-        user_prompt: "@cached_user_name"
-        response_mapping:
-          - key: openai_status
-            path: status
+      - id: "local_openai"
+        name: "Local OpenAI Mock"
+        type: "openai"
+        base_url: "@openai_base_url"
+        token: "@mock_openai_token"
+        model: "gpt-4.1-mini"
+        system_prompt: "You are a concise mock assistant."
+        user_prompt: "$cached_user_name"
+        assign:
+          $openai_status: "outputs.statusCode"
 
-      local_telegram:
-        name: Local Telegram Mock
-        type: telegram
-        base_url: "$telegram_base_url"
-        token: "$mock_telegram_token"
-        chat_id: "$mock_telegram_chat_id"
-        message: "@cached_user_name"
-        response_mapping:
-          - key: telegram_status
-            path: status
+      - id: "local_telegram"
+        name: "Local Telegram Mock"
+        type: "telegram"
+        condition:
+          variable: "$cached_user_name"
+          operator: "="
+          expected: "Alice Goblin"
+        base_url: "@telegram_base_url"
+        token: "@mock_telegram_token"
+        chat_id: "@mock_telegram_chat_id"
+        message: "$cached_user_name"
+        assign:
+          $telegram_status: "outputs.statusCode"
 
-      goto_without_jump:
-        name: Goto Without Jump
-        type: goto
-        variable: retry_state
+      - id: "goto_without_jump"
+        name: "Goto Without Jump"
+        type: "goto"
+        variable: "$retry_state"
         operator: "="
-        expected: retry
-        target_step_uid: final_assertions
+        expected: "retry"
+        target_step_id: "final_assertions"
 
-      final_assertions:
-        name: Final Assertions
-        type: assert
-        variable: cached_user_name
+      - id: "final_assertions"
+        name: "Final Assertions"
+        type: "assert"
+        variable: "$cached_user_name"
         operator: "="
-        expected: Alice Goblin
+        expected: "Alice Goblin"
         error_message: "Redis cache did not return Alice Goblin"
 
-      assert_container_stdout:
-        name: Assert Container Stdout
-        type: assert
-        variable: container_stdout
+      - id: "assert_container_stdout"
+        name: "Assert Container Stdout"
+        type: "assert"
+        variable: "$container_stdout"
         operator: "="
-        expected: Alice Goblin
+        expected: "Alice Goblin"
         error_message: "Container output did not match cached user name"
 
-      assert_postgres_row_count:
-        name: Assert Postgres Row Count
-        type: assert
-        variable: postgres_row_count
-        operator: "="
+      - id: "assert_postgres_row_count"
+        name: "Assert Postgres Row Count"
+        type: "assert"
+        variable: "$postgres_row_count"
+        operator: ">="
         expected: "1"
-        error_message: "Postgres example did not return exactly one row"
+        error_message: "Postgres example did not return at least one row"
 
-      assert_openai_status:
-        name: Assert OpenAI Status
-        type: assert
-        variable: openai_status
+      - id: "assert_openai_status"
+        name: "Assert OpenAI Status"
+        type: "assert"
+        variable: "$openai_status"
         operator: "="
         expected: "200"
         error_message: "OpenAI mock did not return 200"
 
-      assert_telegram_status:
-        name: Assert Telegram Status
-        type: assert
-        variable: telegram_status
+      - id: "assert_telegram_status"
+        name: "Assert Telegram Status"
+        type: "assert"
+        variable: "$telegram_status"
         operator: "="
         expected: "200"
         error_message: "Telegram mock did not return 200"
 
   goto_example:
-    name: Goto Example
+    name: "Goto Example"
     variables:
-      retry_state: retry
+      retry_state: "retry"
     blocks:
-      mark_retry:
-        name: Mark Retry
-        type: setvars
-        assignments:
-          - variable: retry_state
-            value: retry
-
-      jump_once:
-        name: Jump Once
-        type: goto
-        variable: retry_state
+      - id: "jump_once"
+        name: "Jump Once"
+        type: "goto"
+        variable: "$retry_state"
         operator: "="
-        expected: retry
-        target_step_uid: finalize_retry
+        expected: "retry"
+        target_step_id: "finalize_retry"
 
-      skipped_on_first_pass:
-        name: Skipped On First Pass
-        type: setvars
-        assignments:
-          - variable: retry_note
-            value: this-step-was-skipped
+      - id: "skipped_on_first_pass"
+        name: "Skipped On First Pass"
+        type: "setvars"
+        set:
+          $retry_note: "this-step-was-skipped"
 
-      finalize_retry:
-        name: Finalize Retry
-        type: setvars
-        assignments:
-          - variable: retry_state
-            value: done
+      - id: "finalize_retry"
+        name: "Finalize Retry"
+        type: "setvars"
+        set:
+          $retry_state: "done"
 
-      assert_retry_done:
-        name: Assert Retry Done
-        type: assert
-        variable: retry_state
+      - id: "assert_retry_done"
+        name: "Assert Retry Done"
+        type: "assert"
+        variable: "$retry_state"
         operator: "="
-        expected: done
+        expected: "done"
         error_message: "Goto example did not land on the expected step"
 
-  error_handler_example:
-    name: Error Handler Example
+  workflow_timeout_example:
+    name: "Workflow Timeout Example"
+    timeout_seconds: 3
+    variables:
+      loop_state: "loop"
     blocks:
-      force_failure:
-        name: Force Failure
-        type: assert
-        variable: run_label
+      - id: "loop_forever"
+        name: "Loop Forever"
+        type: "goto"
+        variable: "$loop_state"
         operator: "="
-        expected: should-fail
-        error_message: "This workflow intentionally fails to demonstrate catchErrorBlocks"
-    catchErrorBlocks:
-      notify_local_telegram:
-        name: Notify Local Telegram
-        type: telegram
-        base_url: "$telegram_base_url"
-        token: "$mock_telegram_token"
-        chat_id: "$mock_telegram_chat_id"
-        message: "@ErrorMessage"
+        expected: "loop"
+        target_step_id: "loop_forever"
+        wait_seconds: 1
+
+  retry_example:
+    name: "Retry Example"
+    blocks:
+      - id: "retry_fetch_user"
+        name: "Retry Fetch User"
+        type: "retry"
+        max_attempts: 5
+        delay_ms: 100
+        retry_on:
+          status_codes: [429, 500, 502, 503]
+          transport_errors: true
+        block:
+          type: "http"
+          method: "GET"
+          url: "@users_url"
+          headers:
+            X-Retry-Attempt: "!Retry.Attempt"
+          assign:
+            $retry_user_id: "body.id"
+            $retry_http_status: "outputs.statusCode"
+
+      - id: "assert_retry_status"
+        name: "Assert Retry Status"
+        type: "assert"
+        variable: "$retry_http_status"
+        operator: "="
+        expected: "200"
+        error_message: "Retry example did not return HTTP 200"
+
+      - id: "log_retry_result"
+        name: "Log Retry Result"
+        type: "log"
+        level: "info"
+        message: "Retry example fetched user $retry_user_id"
+
+  foreach_example:
+    name: "Foreach Example"
+    variables:
+      users_batch: '[{"id":"101","name":"Alice Goblin"},{"id":"102","name":"Bob Goblin"},{"id":"103","name":"Carol Goblin"}]'
+    blocks:
+      - id: "notify_each_user"
+        name: "Notify Each User"
+        type: "foreach"
+        items: "$users_batch"
+        concurrency: 2
+        block:
+          type: "log"
+          level: "info"
+          message: "Foreach item !Each.Index/!Each.Count -> !Each.Item.name (!Each.Item.id)"
+        collect:
+          $foreach_user_ids: "item.id"
+          $foreach_user_names: "item.name"
+
+      - id: "assert_foreach_ids"
+        name: "Assert Foreach IDs"
+        type: "assert"
+        variable: "$foreach_user_ids"
+        operator: "="
+        expected: '["101","102","103"]'
+        error_message: "Foreach example did not collect the expected user ids"
+
+      - id: "assert_foreach_names"
+        name: "Assert Foreach Names"
+        type: "assert"
+        variable: "$foreach_user_names"
+        operator: "contains"
+        expected: "Carol Goblin"
+        error_message: "Foreach example did not collect the expected user names"
+
+  foreach_range_example:
+    name: "Foreach Range Example"
+    blocks:
+      - id: "generate_range"
+        name: "Generate Range"
+        type: "foreach"
+        items:
+          from: 1
+          to: 5
+          step: 2
+        block:
+          type: "log"
+          level: "info"
+          message: "Range item !Each.Item at index !Each.Index"
+        collect:
+          $range_values: "item"
+
+      - id: "assert_range_values"
+        name: "Assert Range Values"
+        type: "assert"
+        variable: "$range_values"
+        operator: "="
+        expected: "[1,3,5]"
+        error_message: "Foreach range example did not collect the expected values"
+
+  postgres_transaction_example:
+    name: "Postgres Transaction Example"
+    constants:
+      local_run_id: "postgres-tx-user"
+    blocks:
+      - id: "prepare_postgres_transaction_table"
+        name: "Prepare Postgres Transaction Table"
+        type: "postgres"
+        dsn: "@postgres_dsn"
+        query: >
+          create table if not exists workflow_tx_runs (
+            id text primary key,
+            status text not null
+          )
+
+      - id: "run_postgres_transaction"
+        name: "Run Postgres Transaction"
+        type: "postgres"
+        dsn: "@postgres_dsn"
+        transaction:
+          - query: >
+              insert into workflow_tx_runs (id, status)
+              values ($1, $2)
+              on conflict (id) do update
+              set status = excluded.status
+            params:
+              - "@local_run_id"
+              - "prepared"
+          - query: >
+              select count(*) as total
+              from workflow_tx_runs
+              where id = $1
+            params:
+              - "@local_run_id"
+            assign:
+              $tx_row_count: "body.rows.0.total"
+          - query: >
+              update workflow_tx_runs
+              set status = $1
+              where id = $2
+            params:
+              - "counted_$tx_row_count"
+              - "@local_run_id"
+
+      - id: "assert_postgres_transaction_row_count"
+        name: "Assert Postgres Transaction Row Count"
+        type: "assert"
+        variable: "$tx_row_count"
+        operator: "="
+        expected: "1"
+        error_message: "Postgres transaction example did not assign the expected row count"
+
+  parallel_example:
+    name: "Parallel Example"
+    blocks:
+      - id: "prepare_data"
+        name: "Prepare Data"
+        type: "parallel"
+        blocks:
+          - id: "build_user_payload"
+            type: "transform"
+            value:
+              user:
+                id: "42"
+                name: "Alice Goblin"
+            casts:
+              user.id: "int"
+          - id: "build_session"
+            type: "transform"
+            value:
+              session_token: "parallel-demo-token"
+        collect:
+          $parallel_user_json: "build_user_payload.output.json"
+          $parallel_session_token: "build_session.output.value.session_token"
+
+      - id: "assert_parallel_user_json"
+        name: "Assert Parallel User JSON"
+        type: "assert"
+        variable: "$parallel_user_json"
+        operator: "contains"
+        expected: "Alice Goblin"
+        error_message: "parallel example did not collect transform output"
+
+      - id: "assert_parallel_session_token"
+        name: "Assert Parallel Session Token"
+        type: "assert"
+        variable: "$parallel_session_token"
+        operator: "="
+        expected: "parallel-demo-token"
+        error_message: "parallel example did not collect setvars export"
+
+  transform_example:
+    name: "Transform Example"
+    variables:
+      user_id: "42"
+      user_name: "Alice Goblin"
+      user_active: "true"
+    blocks:
+      - id: "build_payload"
+        name: "Build Payload"
+        type: "transform"
+        value:
+          user:
+            id: "$user_id"
+            name: "$user_name"
+            active: "$user_active"
+          metadata:
+            source: "transform_example"
+        casts:
+          user.id: "int"
+          user.active: "bool"
+        assign:
+          $payload_json: "json"
+          $payload_user_name: "value.user.name"
+          $payload_user_active: "value.user.active"
+          $payload_source: "value.metadata.source"
+
+      - id: "log_payload"
+        name: "Log Payload"
+        type: "log"
+        level: "info"
+        message: "$payload_json"
+
+      - id: "assert_payload_user_name"
+        name: "Assert Payload User Name"
+        type: "assert"
+        variable: "$payload_user_name"
+        operator: "="
+        expected: "Alice Goblin"
+        error_message: "Transform example did not keep the expected user name"
+
+      - id: "assert_payload_user_active"
+        name: "Assert Payload User Active"
+        type: "assert"
+        variable: "$payload_user_active"
+        operator: "="
+        expected: "true"
+        error_message: "Transform example did not cast user.active to true"
+
+      - id: "assert_payload_source"
+        name: "Assert Payload Source"
+        type: "assert"
+        variable: "$payload_source"
+        operator: "="
+        expected: "transform_example"
+        error_message: "Transform example did not keep metadata.source"
+
+      - id: "assert_payload_json_contains_id"
+        name: "Assert Payload JSON Contains ID"
+        type: "assert"
+        variable: "$payload_json"
+        operator: "contains"
+        expected: '"id":42'
+        error_message: "Transform example JSON did not contain the expected numeric id"
+
+  email_example:
+    name: "Email Example"
+    variables:
+      verification_code: "123456"
+    blocks:
+      - id: "send_verification_email"
+        name: "Send Verification Email"
+        type: "smtp"
+        host: "@smtp_host"
+        port: "@smtp_port"
+        # For authenticated SMTP servers, also set:
+        # username: "@smtp_user"
+        # password: "@smtp_pass"
+        from: "@smtp_from"
+        to:
+          - "@mail_to"
+        subject: "Verify your email"
+        text: "Your verification code is $verification_code"
+        # html is also supported; use it alone or together with text for multipart/alternative emails
+        html: "<p>Your verification code is <b>$verification_code</b></p>"
+        assign:
+          $sent_message_id: "outputs.message_id"
+
+      - id: "wait_for_verification_email"
+        name: "Wait For Verification Email"
+        type: "imap"
+        host: "@imap_host"
+        port: "@imap_port"
+        username: "@mail_username"
+        password: "@mail_password"
+        tls: false
+        mailbox: "@imap_mailbox"
+        criteria:
+          message_id: "$sent_message_id"
+          to: "@mail_to"
+          subject_contains: "Verify your email"
+          body_contains: "$verification_code"
+          unseen_only: true
+        wait:
+          timeout_ms: 10000
+          poll_interval_ms: 500
+        mark_as_seen: true
+        assign:
+          $email_subject: "body.message.subject"
+          $email_text: "body.message.text"
+
+      - id: "extract_verification_code"
+        name: "Extract Verification Code"
+        type: "transform"
+        value:
+          text: "$email_text"
+        regex:
+          code:
+            from: "value.text"
+            pattern: "\\b(\\d{6})\\b"
+            group: 1
+        assign:
+          $received_code: "extracted.code"
+
+      - id: "assert_email_subject"
+        name: "Assert Email Subject"
+        type: "assert"
+        variable: "$email_subject"
+        operator: "="
+        expected: "Verify your email"
+        error_message: "Email example did not receive the expected subject"
+
+      - id: "assert_received_code"
+        name: "Assert Received Code"
+        type: "assert"
+        variable: "$received_code"
+        operator: "="
+        expected: "$verification_code"
+        error_message: "Email example did not extract the expected verification code"
+
+  error_handler_example:
+    name: "Error Handler Example"
+    blocks:
+      - id: "force_failure"
+        name: "Force Failure"
+        type: "assert"
+        variable: "$run_label"
+        operator: "="
+        expected: "should-fail"
+        error_message: "This workflow intentionally fails to demonstrate catch_error_blocks"
+    catch_error_blocks:
+      - id: "notify_local_telegram"
+        name: "Notify Local Telegram"
+        type: "telegram"
+        base_url: "@telegram_base_url"
+        token: "@mock_telegram_token"
+        chat_id: "@mock_telegram_chat_id"
+        message: "!ErrorMessage"
+
+  continue_on_error_example:
+    name: "Continue On Error Example"
+    blocks:
+      - id: "best_effort_notification"
+        name: "Best Effort Notification"
+        type: "assert"
+        continue_on_error: true
+        variable: "$run_label"
+        operator: "="
+        expected: "this-will-not-match"
+        error_message: "This step intentionally fails to demonstrate continue_on_error"
+
+      - id: "assert_workflow_continued"
+        name: "Assert Workflow Continued"
+        type: "assert"
+        variable: "$run_label"
+        operator: "="
+        expected: "bootstrap"
+        error_message: "continue_on_error example did not continue after the ignored failure"
+
+  secret_variables_example:
+    name: "Secret Variables Example"
+    secret_variables:
+      session_token: ""
+    blocks:
+      - id: "issue_session_token"
+        name: "Issue Session Token"
+        type: "setvars"
+        set:
+          $session_token: "secret-demo-token"
+
+      - id: "assert_session_token"
+        name: "Assert Session Token"
+        type: "assert"
+        variable: "$session_token"
+        operator: "="
+        expected: "secret-demo-token"
+        error_message: "secret_variables example did not populate session_token"
+
+  parent_builtins_child_example:
+    name: "Parent Built-ins Child Example"
+    outputs:
+      child_run_label: "$child_run_label"
+    blocks:
+      - id: "export_parent_context"
+        name: "Export Parent Context"
+        type: "setvars"
+        set:
+          $child_run_label: "Parent workflow !Parent.WorkflowName (!Parent.WorkflowID) invoked this child workflow for $run_label"
 
   workflow_block_example:
-    name: Workflow Block Example
+    name: "Workflow Block Example"
     blocks:
-      nested_workflow:
-        name: Nested Workflow
-        type: workflow
-        target_workflow_uid: local_stack_example
+      - id: "nested_workflow"
+        name: "Nested Workflow"
+        type: "workflow"
+        target_workflow_id: "parent_builtins_child_example"
+        inputs:
+          run_label: "$run_label"
+        assign:
+          $workflow_child_message: "outputs.child_run_label"
+
+      - id: "assert_workflow_child_output"
+        name: "Assert Workflow Child Output"
+        type: "assert"
+        variable: "$workflow_child_message"
+        operator: "contains"
+        expected: "invoked this child workflow for"
+        error_message: "workflow block example did not expose child workflow outputs to the parent"

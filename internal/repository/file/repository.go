@@ -2,15 +2,15 @@
 package filerepository
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
 
-	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
-	"github.com/wiregoblin/wiregoblin/internal/models"
+	"github.com/wiregoblin/wiregoblin/internal/model"
 )
 
 // Repository loads project definitions from one YAML file on disk.
@@ -24,7 +24,7 @@ func New(path string) *Repository {
 }
 
 // GetProject loads and parses one project definition from disk.
-func (r *Repository) GetProject() (*models.Definition, error) {
+func (r *Repository) GetProject(_ context.Context) (*model.Definition, error) {
 	data, err := os.ReadFile(r.path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", r.path, err)
@@ -33,58 +33,72 @@ func (r *Repository) GetProject() (*models.Definition, error) {
 }
 
 type rawConfig struct {
-	ID        string                 `yaml:"id"`
-	Name      string                 `yaml:"name"`
-	Version   int                    `yaml:"version"`
-	Constants map[string]string      `yaml:"constants"`
-	Secrets   map[string]string      `yaml:"secrets"`
-	Variables yaml.Node              `yaml:"variables"`
-	Workflows map[string]rawWorkflow `yaml:"workflows"`
+	ID              string                 `yaml:"id"`
+	Name            string                 `yaml:"name"`
+	Version         int                    `yaml:"version"`
+	Constants       map[string]string      `yaml:"constants"`
+	Secrets         map[string]string      `yaml:"secrets"`
+	Variables       yaml.Node              `yaml:"variables"`
+	SecretVariables yaml.Node              `yaml:"secret_variables"`
+	Workflows       map[string]rawWorkflow `yaml:"workflows"`
 }
 
 type rawWorkflow struct {
 	Name             string            `yaml:"name"`
+	TimeoutSeconds   int               `yaml:"timeout_seconds"`
 	Constants        map[string]string `yaml:"constants"`
+	Outputs          map[string]string `yaml:"outputs"`
 	Variables        yaml.Node         `yaml:"variables"`
-	Blocks           orderedMap        `yaml:"blocks"`
-	CatchErrorBlocks orderedMap        `yaml:"catchErrorBlocks"`
+	SecretVariables  yaml.Node         `yaml:"secret_variables"`
+	Blocks           orderedBlocks     `yaml:"blocks"`
+	CatchErrorBlocks orderedBlocks     `yaml:"catch_error_blocks"`
 }
 
-// orderedMap preserves YAML mapping key order during unmarshalling.
-type orderedMap struct {
-	Keys   []string
-	Values map[string]map[string]any
+type blockEntry struct {
+	ID     string
+	Values map[string]any
 }
 
-func (m *orderedMap) UnmarshalYAML(value *yaml.Node) error {
+// orderedBlocks preserves YAML sequence order during unmarshalling.
+type orderedBlocks struct {
+	Items []blockEntry
+}
+
+func (b *orderedBlocks) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.ScalarNode && value.Value == "" {
 		return nil
 	}
-	if value.Kind != yaml.MappingNode {
-		return fmt.Errorf("expected a mapping for blocks, got %v", value.Kind)
+	if value.Kind != yaml.SequenceNode {
+		return fmt.Errorf("expected a sequence for blocks, got %v", value.Kind)
 	}
-	m.Values = make(map[string]map[string]any)
-	for i := 0; i+1 < len(value.Content); i += 2 {
-		key := value.Content[i].Value
-		var val map[string]any
-		if err := value.Content[i+1].Decode(&val); err != nil {
-			return fmt.Errorf("decode block %q: %w", key, err)
+	b.Items = make([]blockEntry, 0, len(value.Content))
+	for index, child := range value.Content {
+		var raw map[string]any
+		if err := child.Decode(&raw); err != nil {
+			return fmt.Errorf("decode block %d: %w", index+1, err)
 		}
-		m.Keys = append(m.Keys, key)
-		m.Values[key] = val
+		id := strings.TrimSpace(fmt.Sprint(raw["id"]))
+		if id == "" {
+			return fmt.Errorf("block %d id is required", index+1)
+		}
+		delete(raw, "id")
+		b.Items = append(b.Items, blockEntry{ID: id, Values: raw})
 	}
 	return nil
 }
 
-func parse(data []byte) (*models.Definition, error) {
+func parse(data []byte) (*model.Definition, error) {
 	var raw rawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse yaml: %w", err)
 	}
 
-	projectID := nameToUUID("project:" + raw.ID)
+	projectID := strings.TrimSpace(raw.ID)
+	if projectID == "" {
+		projectID = raw.Name
+	}
 
-	meta := &models.Project{
+	meta := &model.Project{
 		ID:   projectID,
 		Name: raw.Name,
 	}
@@ -95,8 +109,9 @@ func parse(data []byte) (*models.Definition, error) {
 	meta.Secrets = appendSortedEntries(meta.Secrets, raw.Secrets, resolveEnvRef)
 
 	meta.Variables = append(meta.Variables, decodeEntries(&raw.Variables)...)
+	meta.SecretVariables = append(meta.SecretVariables, decodeEntries(&raw.SecretVariables)...)
 
-	workflows := make(map[string]*models.Workflow, len(raw.Workflows))
+	workflows := make(map[string]*model.Workflow, len(raw.Workflows))
 	for wfKey, rawWF := range raw.Workflows {
 		wf, err := parseWorkflow(wfKey, rawWF, projectID)
 		if err != nil {
@@ -105,14 +120,19 @@ func parse(data []byte) (*models.Definition, error) {
 		workflows[wfKey] = wf
 	}
 
-	return &models.Definition{Meta: meta, Workflows: workflows}, nil
+	return &model.Definition{Meta: meta, Workflows: workflows}, nil
 }
 
-func parseWorkflow(key string, raw rawWorkflow, projectID uuid.UUID) (*models.Workflow, error) {
-	wf := &models.Workflow{
-		ID:        nameToUUID("workflow:" + key),
-		ProjectID: projectID,
-		Name:      raw.Name,
+func parseWorkflow(key string, raw rawWorkflow, projectID string) (*model.Workflow, error) {
+	workflowID := key
+	if workflowID == "" {
+		workflowID = raw.Name
+	}
+	wf := &model.Workflow{
+		ID:             workflowID,
+		ProjectID:      projectID,
+		Name:           raw.Name,
+		TimeoutSeconds: raw.TimeoutSeconds,
 	}
 	if wf.Name == "" {
 		wf.Name = key
@@ -121,40 +141,52 @@ func parseWorkflow(key string, raw rawWorkflow, projectID uuid.UUID) (*models.Wo
 	wf.Constants = appendSortedEntries(wf.Constants, raw.Constants, func(value string) string {
 		return value
 	})
+	if len(raw.Outputs) != 0 {
+		wf.Outputs = make(map[string]string, len(raw.Outputs))
+		for key, value := range raw.Outputs {
+			trimmedKey := strings.TrimSpace(key)
+			trimmedValue := strings.TrimSpace(value)
+			if trimmedKey == "" || trimmedValue == "" {
+				continue
+			}
+			wf.Outputs[trimmedKey] = trimmedValue
+		}
+	}
 
 	wf.Variables = append(wf.Variables, decodeEntries(&raw.Variables)...)
+	wf.SecretVariables = append(wf.SecretVariables, decodeEntries(&raw.SecretVariables)...)
 
-	steps, err := parseBlocks(key, raw.Blocks)
+	steps, err := parseBlocks(raw.Blocks)
 	if err != nil {
 		return nil, err
 	}
 	wf.Steps = steps
 
-	errorSteps, err := parseBlocks(key+":onError", raw.CatchErrorBlocks)
+	errorSteps, err := parseBlocks(raw.CatchErrorBlocks)
 	if err != nil {
-		return nil, fmt.Errorf("catchErrorBlocks: %w", err)
+		return nil, fmt.Errorf("catch_error_blocks: %w", err)
 	}
 	wf.OnErrorSteps = errorSteps
 
 	return wf, nil
 }
 
-func parseBlocks(workflowKey string, om orderedMap) ([]models.Step, error) {
-	steps := make([]models.Step, 0, len(om.Keys))
-	for _, blockKey := range om.Keys {
-		raw := om.Values[blockKey]
-		step, err := parseBlock(workflowKey, blockKey, raw)
+func parseBlocks(blocks orderedBlocks) ([]model.Step, error) {
+	steps := make([]model.Step, 0, len(blocks.Items))
+	for _, entry := range blocks.Items {
+		step, err := parseBlock(entry.ID, entry.Values)
 		if err != nil {
-			return nil, fmt.Errorf("block %q: %w", blockKey, err)
+			return nil, fmt.Errorf("block %q: %w", entry.ID, err)
 		}
 		steps = append(steps, step)
 	}
 	return steps, nil
 }
 
-func parseBlock(workflowKey, blockKey string, raw map[string]any) (models.Step, error) {
-	step := models.Step{
-		ID:      nameToUUID(workflowKey + ":" + blockKey),
+func parseBlock(blockKey string, raw map[string]any) (model.Step, error) {
+	step := model.Step{
+		ID:      blockKey,
+		BlockID: blockKey,
 		Enabled: true,
 		Config:  map[string]any{},
 	}
@@ -167,37 +199,36 @@ func parseBlock(workflowKey, blockKey string, raw map[string]any) (models.Step, 
 
 	blockType, ok := raw["type"].(string)
 	if !ok || strings.TrimSpace(blockType) == "" {
-		return models.Step{}, fmt.Errorf("type is required")
+		return model.Step{}, fmt.Errorf("type is required")
 	}
-	step.Type = strings.ToLower(strings.TrimSpace(blockType))
+	step.Type = model.BlockType(strings.ToLower(strings.TrimSpace(blockType)))
 
 	if enabled, ok := raw["enabled"].(bool); ok {
 		step.Enabled = enabled
+	}
+	if continueOnError, ok := raw["continue_on_error"].(bool); ok {
+		step.ContinueOnError = continueOnError
 	}
 
 	for k, v := range raw {
 		key := normalizeStepConfigKey(k)
 		switch k {
-		case "name", "type", "enabled":
+		case "name", "type", "enabled", "continue_on_error":
 			continue
 		}
 		switch key {
-		case "response":
-			step.Config["response_mapping"] = convertResponseShorthand(v)
-		case "target_step_uid":
-			if s, ok := v.(string); ok {
-				if _, err := uuid.Parse(s); err != nil {
-					v = nameToUUID(workflowKey + ":" + s).String()
-				}
+		case "assign":
+			step.Config["assign"] = mergeAssignConfig(step.Config["assign"], v)
+		case "condition":
+			condition, err := parseCondition(v)
+			if err != nil {
+				return model.Step{}, fmt.Errorf("condition: %w", err)
 			}
-			step.Config[key] = v
-		case "target_workflow_uid":
-			if s, ok := v.(string); ok {
-				if _, err := uuid.Parse(s); err != nil {
-					v = nameToUUID("workflow:" + s).String()
-				}
-			}
-			step.Config[key] = v
+			step.Condition = condition
+		case "target_step_id":
+			step.Config[key] = strings.TrimSpace(fmt.Sprint(v))
+		case "target_workflow_id":
+			step.Config[key] = strings.TrimSpace(fmt.Sprint(v))
 		default:
 			step.Config[key] = v
 		}
@@ -206,18 +237,60 @@ func parseBlock(workflowKey, blockKey string, raw map[string]any) (models.Step, 
 	return step, nil
 }
 
-func convertResponseShorthand(v any) []any {
+func parseCondition(raw any) (*model.Condition, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	typed, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("must be a mapping")
+	}
+
+	condition := &model.Condition{
+		Variable: decodeOptionalString(typed, "variable"),
+		Operator: decodeOptionalString(typed, "operator"),
+		Expected: decodeOptionalString(typed, "expected"),
+	}
+
+	if condition.Variable == "" && condition.Operator == "" && condition.Expected == "" {
+		return nil, nil
+	}
+
+	return condition, nil
+}
+
+func decodeOptionalString(values map[string]any, key string) string {
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func mergeAssignConfig(existing any, value any) []any {
+	entries := decodeAssignConfig(existing)
+	return append(entries, convertAssignShorthand(value)...)
+}
+
+func decodeAssignConfig(v any) []any {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	return arr
+}
+
+func convertAssignShorthand(v any) []any {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return nil
 	}
 	entries := make([]any, 0, len(m))
-	for path, varRef := range m {
-		varName := fmt.Sprint(varRef)
-		varName = strings.TrimPrefix(varName, "@")
+	for varName, path := range m {
 		entries = append(entries, map[string]any{
-			"key":  varName,
-			"path": path,
+			"key":  strings.TrimSpace(varName),
+			"path": strings.TrimSpace(fmt.Sprint(path)),
 		})
 	}
 	return entries
@@ -232,21 +305,21 @@ func resolveEnvRef(v string) string {
 }
 
 // decodeEntries accepts either a sequence of strings or a mapping of key/value pairs.
-func decodeEntries(node *yaml.Node) []models.Entry {
+func decodeEntries(node *yaml.Node) []model.Entry {
 	if node == nil || node.Kind == 0 {
 		return nil
 	}
 	if node.Kind == yaml.SequenceNode {
-		entries := make([]models.Entry, 0, len(node.Content))
+		entries := make([]model.Entry, 0, len(node.Content))
 		for _, child := range node.Content {
 			if child.Value != "" {
-				entries = append(entries, models.Entry{Key: child.Value, Value: ""})
+				entries = append(entries, model.Entry{Key: child.Value, Value: ""})
 			}
 		}
 		return entries
 	}
 	if node.Kind == yaml.MappingNode {
-		entries := make([]models.Entry, 0, len(node.Content)/2)
+		entries := make([]model.Entry, 0, len(node.Content)/2)
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			var value any
 			if err := node.Content[i+1].Decode(&value); err != nil {
@@ -256,7 +329,7 @@ func decodeEntries(node *yaml.Node) []models.Entry {
 			if value != nil {
 				stringValue = fmt.Sprint(value)
 			}
-			entries = append(entries, models.Entry{
+			entries = append(entries, model.Entry{
 				Key:   node.Content[i].Value,
 				Value: stringValue,
 			})
@@ -267,10 +340,10 @@ func decodeEntries(node *yaml.Node) []models.Entry {
 }
 
 func appendSortedEntries(
-	dst []models.Entry,
+	dst []model.Entry,
 	values map[string]string,
 	transform func(string) string,
-) []models.Entry {
+) []model.Entry {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -278,21 +351,13 @@ func appendSortedEntries(
 	slices.Sort(keys)
 
 	for _, key := range keys {
-		dst = append(dst, models.Entry{
+		dst = append(dst, model.Entry{
 			Key:   key,
 			Value: transform(values[key]),
 		})
 	}
 
 	return dst
-}
-
-// nameToUUID derives a deterministic UUID v5 from a human-readable name.
-// This ensures that goto target_step_uid references stay stable across loads.
-var uuidNamespace = uuid.MustParse("6ba7b814-9dad-11d1-80b4-00c04fd430c8")
-
-func nameToUUID(name string) uuid.UUID {
-	return uuid.NewSHA1(uuidNamespace, []byte(name))
 }
 
 func normalizeStepConfigKey(key string) string {

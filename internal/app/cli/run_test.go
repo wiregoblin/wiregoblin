@@ -3,13 +3,13 @@ package cliapp
 import (
 	"testing"
 
-	"github.com/wiregoblin/wiregoblin/internal/models"
+	"github.com/wiregoblin/wiregoblin/internal/model"
 )
 
 func TestRedactRunEvent(t *testing.T) {
 	t.Parallel()
 
-	event := models.RunEvent{
+	event := model.RunEvent{
 		Error: "token secret-123 leaked",
 		Request: map[string]any{
 			"authorization": "Bearer secret-123",

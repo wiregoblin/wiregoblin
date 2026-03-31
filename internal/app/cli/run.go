@@ -1,6 +1,7 @@
 package cliapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wiregoblin/wiregoblin/internal/models"
+	"github.com/wiregoblin/wiregoblin/internal/model"
 	workflowservice "github.com/wiregoblin/wiregoblin/internal/service/workflow"
 )
 
@@ -23,9 +24,9 @@ type ExecuteOptions struct {
 }
 
 // ExecuteWorkflow runs one workflow and renders the event stream for CLI users.
-func (a *App) ExecuteWorkflow(workflowName string, opts ExecuteOptions) error {
+func (a *App) ExecuteWorkflow(ctx context.Context, workflowName string, opts ExecuteOptions) error {
 	secretValues := a.secretValues()
-	events, err := a.RunWorkflow(workflowName, opts.RunOptions)
+	events, err := a.RunWorkflow(ctx, workflowName, opts.RunOptions)
 	if err != nil {
 		if !opts.JSONOutput {
 			_, _ = fmt.Fprintln(opts.Stderr, err)
@@ -43,7 +44,7 @@ func (a *App) ExecuteWorkflow(workflowName string, opts ExecuteOptions) error {
 }
 
 func streamWorkflow(
-	events <-chan models.RunEvent,
+	events <-chan model.RunEvent,
 	secretValues []string,
 	verbosity int,
 	jsonOutput bool,
@@ -61,7 +62,7 @@ func streamWorkflow(
 			text.PrintEvent(event)
 		}
 
-		if event.Type == models.EventWorkflowFinished && event.Error != "" {
+		if event.Type == model.EventWorkflowFinished && event.Error != "" {
 			runErr = errors.New(event.Error)
 		}
 	}
@@ -73,7 +74,7 @@ func (a *App) secretValues() []string {
 		return nil
 	}
 
-	project, err := a.projects.GetProject()
+	project, err := a.projects.GetProject(context.Background())
 	if err != nil || project == nil || project.Meta == nil {
 		return nil
 	}
@@ -89,7 +90,7 @@ func (a *App) secretValues() []string {
 	return slices.Compact(values)
 }
 
-func redactRunEvent(event models.RunEvent, secretValues []string) models.RunEvent {
+func redactRunEvent(event model.RunEvent, secretValues []string) model.RunEvent {
 	if len(secretValues) == 0 {
 		return event
 	}
@@ -140,7 +141,7 @@ func redactString(value string, secretValues []string) string {
 	return redacted
 }
 
-func printEventJSON(out io.Writer, event models.RunEvent) error {
+func printEventJSON(out io.Writer, event model.RunEvent) error {
 	return json.NewEncoder(out).Encode(event)
 }
 
@@ -157,26 +158,26 @@ func newTextRenderer(out io.Writer, verbosity int) *textRenderer {
 	}
 }
 
-func (r *textRenderer) PrintEvent(event models.RunEvent) {
+func (r *textRenderer) PrintEvent(event model.RunEvent) {
 	switch event.Type {
-	case models.EventWorkflowStarted:
+	case model.EventWorkflowStarted:
 		r.println(r.activeWorkflowRun, renderWorkflowStarted(event))
-	case models.EventStepStarted:
+	case model.EventStepStarted:
 		r.println(r.activeWorkflowRun, renderStepStarted(event))
 		if event.StepType == "workflow" {
 			r.activeWorkflowRun++
 		}
-	case models.EventStepFinished:
+	case model.EventStepFinished:
 		if event.StepType == "workflow" && r.activeWorkflowRun > 0 {
 			r.activeWorkflowRun--
 		}
 		r.printStepFinished(event)
-	case models.EventWorkflowFinished:
+	case model.EventWorkflowFinished:
 		r.println(r.activeWorkflowRun, renderWorkflowFinished(event))
 	}
 }
 
-func (r *textRenderer) printStepFinished(event models.RunEvent) {
+func (r *textRenderer) printStepFinished(event model.RunEvent) {
 	if event.Status == "ok" && r.verbosity == 0 {
 		return
 	}
@@ -207,7 +208,7 @@ func (r *textRenderer) println(depth int, text string) {
 	_, _ = fmt.Fprintf(r.out, "%s%s\n", strings.Repeat("  ", depth), text)
 }
 
-func renderWorkflowStarted(event models.RunEvent) string {
+func renderWorkflowStarted(event model.RunEvent) string {
 	if event.Total > 0 {
 		return fmt.Sprintf(
 			"🧌 Goblin crew enters %q from project %q. %d top-level %s packed.",
@@ -220,11 +221,11 @@ func renderWorkflowStarted(event models.RunEvent) string {
 	return fmt.Sprintf("🧌 Goblin crew enters %q from project %q.", event.Workflow, event.Project)
 }
 
-func renderStepStarted(event models.RunEvent) string {
+func renderStepStarted(event model.RunEvent) string {
 	return fmt.Sprintf("[%d/%d] Goblin pokes %q [%s]", event.Index, event.Total, event.Step, event.StepType)
 }
 
-func renderStepFinished(event models.RunEvent, verbosity int) string {
+func renderStepFinished(event model.RunEvent, verbosity int) string {
 	duration := formatDuration(time.Duration(event.DurationMS) * time.Millisecond)
 
 	switch event.Status {
@@ -249,7 +250,7 @@ func renderStepFinished(event models.RunEvent, verbosity int) string {
 	}
 }
 
-func renderWorkflowFinished(event models.RunEvent) string {
+func renderWorkflowFinished(event model.RunEvent) string {
 	duration := formatDuration(time.Duration(event.DurationMS) * time.Millisecond)
 	if event.Error != "" {
 		return fmt.Sprintf("🧌 Goblin raid on %q blew up after %s. Trouble: %s", event.Workflow, duration, event.Error)

@@ -12,6 +12,7 @@ type ResponseMappingProvider interface {
 }
 
 // ReferencePolicyProvider describes which block fields accept constants and/or runtime variables.
+// Read-only built-ins in the ! namespace follow the same policy gates.
 type ReferencePolicyProvider interface {
 	ReferencePolicy() []ReferencePolicy
 }

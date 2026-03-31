@@ -3,17 +3,19 @@ package engine
 
 import (
 	"github.com/wiregoblin/wiregoblin/internal/block"
-	"github.com/wiregoblin/wiregoblin/internal/models"
+	"github.com/wiregoblin/wiregoblin/internal/model"
 )
 
 // NewRunContext builds a workflow-scoped execution context from project and workflow definitions.
-// Secrets are pre-resolved (from environment variables) and stored in Variables.
-func NewRunContext(project *models.Project, definition *models.Workflow) *block.RunContext {
+// Secrets stay in the @ namespace, mutable runtime values resolve through $, and read-only runtime built-ins use !.
+func NewRunContext(project *model.Project, definition *model.Workflow) *block.RunContext {
 	runCtx := &block.RunContext{
-		Constants:   map[string]string{},
-		Secrets:     map[string]string{},
-		Variables:   map[string]string{},
-		StepResults: map[string]any{},
+		Constants:       map[string]string{},
+		Secrets:         map[string]string{},
+		SecretVariables: map[string]string{},
+		Variables:       map[string]string{},
+		Builtins:        map[string]string{},
+		StepResults:     map[string]any{},
 	}
 
 	if project != nil {
@@ -23,7 +25,6 @@ func NewRunContext(project *models.Project, definition *models.Workflow) *block.
 				runCtx.Constants[entry.Key] = entry.Value
 			}
 		}
-		// Variables and secrets both land in Variables so @ref resolves them uniformly.
 		for _, entry := range project.Variables {
 			if entry.Key != "" {
 				runCtx.Variables[entry.Key] = entry.Value
@@ -32,11 +33,21 @@ func NewRunContext(project *models.Project, definition *models.Workflow) *block.
 		for _, entry := range project.Secrets {
 			if entry.Key != "" {
 				runCtx.Secrets[entry.Key] = entry.Value
-				runCtx.Variables[entry.Key] = entry.Value
+			}
+		}
+		for _, entry := range project.SecretVariables {
+			if entry.Key != "" {
+				runCtx.SecretVariables[entry.Key] = entry.Value
 			}
 		}
 	}
 	if definition != nil {
+		if definition.ID != "" {
+			runCtx.Builtins["WorkflowID"] = definition.ID
+		}
+		if definition.Name != "" {
+			runCtx.Builtins["WorkflowName"] = definition.Name
+		}
 		for _, entry := range definition.Constants {
 			if entry.Key != "" {
 				runCtx.Constants[entry.Key] = entry.Value
@@ -45,6 +56,11 @@ func NewRunContext(project *models.Project, definition *models.Workflow) *block.
 		for _, entry := range definition.Variables {
 			if entry.Key != "" {
 				runCtx.Variables[entry.Key] = entry.Value
+			}
+		}
+		for _, entry := range definition.SecretVariables {
+			if entry.Key != "" {
+				runCtx.SecretVariables[entry.Key] = entry.Value
 			}
 		}
 	}

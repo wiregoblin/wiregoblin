@@ -30,3 +30,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  greenmail:
+    image: greenmail/standalone:2.1.8
+    environment:
+      GREENMAIL_OPTS: "-Dgreenmail.setup.test.smtp -Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=test1:pwd1"
+    ports:
+      - "13025:3025"
+      - "13143:3143"

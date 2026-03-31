@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "/users",
+    "bodyPatterns": [
+      {
+        "equalToJson": "{\"name\":\"Alice Goblin\",\"role\":\"maintainer\"}",
+        "ignoreArrayOrder": true,
+        "ignoreExtraElements": false
+      }
+    ]
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "id": 2,
+      "name": "Alice Goblin",
+      "role": "maintainer",
+      "created": true
+    }
+  }
+}
