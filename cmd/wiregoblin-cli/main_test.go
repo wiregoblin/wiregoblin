@@ -156,7 +156,7 @@ workflows:
 	}
 	if !strings.Contains(
 		stderr.String(),
-		"🧌 Goblin crew enters \"Alpha\" from project \"Demo\". 1 top-level trick packed.",
+		"🧌 Goblin crew enters \"Alpha\" from project \"Demo\". 1 step packed.",
 	) {
 		t.Fatalf("stderr = %q, want workflow start line", stderr.String())
 	}
@@ -164,7 +164,7 @@ workflows:
 		t.Fatalf("stderr = %q, want step progress line", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "🧌 Goblin crew hauled \"Alpha\" out of the cave in ") ||
-		!strings.Contains(stderr.String(), "after 1 top-level step.") {
+		!strings.Contains(stderr.String(), "✅ 1/1 passed.") {
 		t.Fatalf("stderr = %q, want completion line", stderr.String())
 	}
 }
@@ -198,9 +198,6 @@ workflows:
 	output := stderr.String()
 	if !strings.Contains(output, "✅ Goblin loot secured") {
 		t.Fatalf("stderr = %q, want goblin success line", output)
-	}
-	if !strings.Contains(output, "🧪 Goblin loot:") {
-		t.Fatalf("stderr = %q, want summarized result line", output)
 	}
 	if !strings.Contains(output, "📜 Goblin spellbook:") {
 		t.Fatalf("stderr = %q, want request section", output)
