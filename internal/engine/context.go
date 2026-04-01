@@ -2,6 +2,11 @@
 package engine
 
 import (
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+
 	"github.com/wiregoblin/wiregoblin/internal/block"
 	"github.com/wiregoblin/wiregoblin/internal/model"
 )
@@ -14,12 +19,23 @@ func NewRunContext(project *model.Project, definition *model.Workflow) *block.Ru
 		Secrets:         map[string]string{},
 		SecretVariables: map[string]string{},
 		Variables:       map[string]string{},
-		Builtins:        map[string]string{},
-		StepResults:     map[string]any{},
+		Builtins: func() map[string]string {
+			now := time.Now().UTC()
+			return map[string]string{
+				"RunID":     uuid.New().String(),
+				"StartTime": now.Format(time.RFC3339),
+				"StartUnix": fmt.Sprintf("%d", now.Unix()),
+				"StartDate": now.Format("2006-01-02"),
+			}
+		}(),
+		StepResults: map[string]any{},
 	}
 
 	if project != nil {
 		runCtx.ProjectID = project.ID
+		if project.ID != "" {
+			runCtx.Builtins["ProjectID"] = project.ID
+		}
 		for _, entry := range project.Constants {
 			if entry.Key != "" {
 				runCtx.Constants[entry.Key] = entry.Value

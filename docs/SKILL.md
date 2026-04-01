@@ -15,16 +15,18 @@ id: "unique-project-id"
 name: "Human Readable Name"
 version: 1
 
-constants:          # string values, referenced as @name
+constants:          # string values, referenced as @name; support ${VAR} and ${VAR:=default}
   key: "value"
+  api_host: "${API_HOST:=https://api.example.com}"
 
 secrets:            # env-var backed, referenced as @name (same as constants)
   token: "${ENV_VAR_NAME}"
+  optional_key: "${OPTIONAL_KEY:=fallback-value}"
 
-variables:          # mutable runtime state, referenced as $name
-  my_var: "initial"
+variables:          # mutable runtime state, referenced as $name; support ${VAR} and ${VAR:=default}
+  my_var: "${MY_VAR:=initial}"
 
-secret_variables:   # mutable runtime secrets, referenced as $name
+secret_variables:   # mutable runtime secrets, referenced as $name; support ${VAR} and ${VAR:=default}
   session_token: ""
 
 workflows:
@@ -169,8 +171,14 @@ workflows:
   max_attempts: 3
   delay_ms: 200
   retry_on:
-    status_codes: [429, 500, 502, 503]
-    transport_errors: true
+    match: "any"
+    rules:
+      - type: "transport_error"
+      - type: "status_code"
+        in: [429, 500, 502, 503]
+      - type: "path"
+        path: "body.data"
+        operator: "empty"
   block:
     type: "http"           # inner block config (no id needed)
     method: "GET"
@@ -340,10 +348,60 @@ workflows:
 
 - `@name` — reference a constant or secret (string)
 - `$name` — reference a variable (mutable, string or JSON)
-- `!Each.Item`, `!Each.Index`, `!Each.Count`, `!Each.Item.field` — foreach built-ins
-- `!Retry.Attempt` — retry built-in (1-based)
-- `!ErrorMessage` — error message in catch_error_blocks
-- `!Parent.WorkflowName`, `!Parent.WorkflowID` — parent context in child workflows
+- `${ENV_VAR}` — inject OS environment variable into a constant/secret/variable value at load time
+- `${ENV_VAR:=default}` — same, but use `default` if the variable is unset or empty
+
+### Global built-ins (`!name`) — available in every step
+
+| Built-in | Example value | Description |
+|----------|---------------|-------------|
+| `!RunID` | `"f47ac10b-..."` | Unique UUID for this run — use as correlation ID |
+| `!StartTime` | `"2026-04-01T12:00:00Z"` | Workflow start time (RFC 3339, UTC) |
+| `!StartUnix` | `"1743508800"` | Workflow start time as Unix epoch seconds |
+| `!StartDate` | `"2026-04-01"` | Workflow start date (`YYYY-MM-DD`, UTC) |
+| `!ProjectID` | `"my-project"` | Project ID |
+| `!WorkflowID` | `"create_user"` | Current workflow ID |
+| `!WorkflowName` | `"Create User"` | Current workflow display name |
+| `!BlockStartTime` | `"2026-04-01T12:00:05Z"` | Current step start time (RFC 3339, UTC) |
+| `!BlockStartUnix` | `"1743508805"` | Current step start time as Unix epoch seconds |
+
+### Error built-ins — populated in `catch_error_blocks`
+
+| Built-in | Description |
+|----------|-------------|
+| `!ErrorMessage` | Error message from the failed step |
+| `!ErrorBlockID` | `id` of the failed step |
+| `!ErrorBlockName` | `name` of the failed step |
+| `!ErrorBlockType` | Block type of the failed step |
+| `!ErrorBlockIndex` | 1-based index of the failed step |
+
+### Parent built-ins — populated inside a child workflow invoked via `workflow` block
+
+| Built-in | Description |
+|----------|-------------|
+| `!Parent.WorkflowID` | Parent workflow ID |
+| `!Parent.WorkflowName` | Parent workflow name |
+| `!Parent.RunID` | Parent run ID |
+| `!Parent.StartTime` | Parent start time |
+
+### foreach built-ins — available inside `foreach` block
+
+| Built-in | Description |
+|----------|-------------|
+| `!Each.Index` | 0-based iteration index |
+| `!Each.Count` | Total number of items |
+| `!Each.First` | `"true"` on first iteration |
+| `!Each.Last` | `"true"` on last iteration |
+| `!Each.Item` | Current item value |
+| `!Each.ItemJSON` | Current item serialized as JSON string |
+| `!Each.Item.<field>` | Field of the current item (for objects) |
+
+### retry built-ins — available inside `retry` block
+
+| Built-in | Description |
+|----------|-------------|
+| `!Retry.Attempt` | Current attempt number (1-based) |
+| `!Retry.MaxAttempts` | Configured max attempts |
 
 ## Rules to follow
 
@@ -355,6 +413,7 @@ workflows:
 6. Constants are string-only; numeric port fields will be parsed by the block at decode time.
 7. When generating a full project, always include at least one assert per workflow.
 8. Output the final YAML as a code block.
+9. Use `${VAR:=default}` in `constants`, `secrets`, `variables`, and `secret_variables` whenever a sensible default exists so the config works out-of-the-box without every env var being set.
 
 ## Task
 

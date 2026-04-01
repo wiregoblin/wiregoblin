@@ -106,6 +106,9 @@ type textRenderer struct {
 	out               io.Writer
 	verbosity         int
 	activeWorkflowRun int
+	stepsPassed       int
+	stepsFailed       int
+	stepsSkipped      int
 }
 
 func newTextRenderer(out io.Writer, verbosity int) *textRenderer {
@@ -130,11 +133,22 @@ func (r *textRenderer) PrintEvent(event model.RunEvent) {
 		}
 		r.printStepFinished(event)
 	case model.EventWorkflowFinished:
-		r.println(r.activeWorkflowRun, renderWorkflowFinished(event))
+		r.println(r.activeWorkflowRun, r.renderWorkflowFinished(event))
 	}
 }
 
 func (r *textRenderer) printStepFinished(event model.RunEvent) {
+	if r.activeWorkflowRun == 0 {
+		switch event.Status {
+		case "ok":
+			r.stepsPassed++
+		case "failed":
+			r.stepsFailed++
+		case "skipped":
+			r.stepsSkipped++
+		}
+	}
+
 	if event.Status == "ok" && r.verbosity == 0 {
 		return
 	}
@@ -144,7 +158,7 @@ func (r *textRenderer) printStepFinished(event model.RunEvent) {
 
 	r.println(r.activeWorkflowRun, renderStepFinished(event, r.verbosity))
 
-	if r.verbosity >= 2 {
+	if r.verbosity == 2 {
 		if summary := summarizeValue(event.Response); summary != "" {
 			r.println(r.activeWorkflowRun, fmt.Sprintf("   🧪 Goblin loot: %s", summary))
 		}
@@ -168,11 +182,11 @@ func (r *textRenderer) println(depth int, text string) {
 func renderWorkflowStarted(event model.RunEvent) string {
 	if event.Total > 0 {
 		return fmt.Sprintf(
-			"🧌 Goblin crew enters %q from project %q. %d top-level %s packed.",
+			"🧌 Goblin crew enters %q from project %q. %d %s packed.",
 			event.WorkflowName,
 			event.ProjectName,
 			event.Total,
-			pluralize(event.Total, "trick", "tricks"),
+			pluralize(event.Total, "step", "steps"),
 		)
 	}
 	return fmt.Sprintf("🧌 Goblin crew enters %q from project %q.", event.WorkflowName, event.ProjectName)
@@ -189,39 +203,66 @@ func renderStepFinished(event model.RunEvent, verbosity int) string {
 	case "skipped":
 		return "   😴 Goblin nap: skipped."
 	case "failed":
-		if verbosity >= 2 {
-			return fmt.Sprintf(
-				"   💥 Goblin trap: failed in %s | step=%s type=%s | trouble=%s",
-				duration,
-				event.Step,
-				event.StepType,
-				event.Error,
-			)
-		}
 		return fmt.Sprintf("   💥 Goblin trap: failed in %s | trouble=%s", duration, event.Error)
 	default:
 		if verbosity >= 2 {
-			return fmt.Sprintf("   ✅ Goblin loot secured in %s | step=%s type=%s", duration, event.Step, event.StepType)
+			if vars := assignedVars(event.Request); len(vars) > 0 {
+				return fmt.Sprintf("   ✅ Goblin loot secured in %s → %s", duration, strings.Join(vars, ", "))
+			}
 		}
 		return fmt.Sprintf("   ✅ Goblin loot secured in %s", duration)
 	}
 }
 
-func renderWorkflowFinished(event model.RunEvent) string {
+func assignedVars(request map[string]any) []string {
+	raw, ok := request["assign"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	vars := make([]string, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if key, ok := m["key"].(string); ok && key != "" {
+			vars = append(vars, key)
+		}
+	}
+	return vars
+}
+
+func (r *textRenderer) renderWorkflowFinished(event model.RunEvent) string {
 	duration := formatDuration(time.Duration(event.DurationMS) * time.Millisecond)
+	summary := r.stepSummary()
 	if event.Error != "" {
+		if summary != "" {
+			return fmt.Sprintf("🧌 Goblin raid on %q blew up after %s. %s", event.WorkflowName, duration, summary)
+		}
 		return fmt.Sprintf("🧌 Goblin raid on %q blew up after %s. Trouble: %s", event.WorkflowName, duration, event.Error)
 	}
-	if event.Total > 0 {
-		return fmt.Sprintf(
-			"🧌 Goblin crew hauled %q out of the cave in %s after %d top-level %s.",
-			event.WorkflowName,
-			duration,
-			event.Total,
-			pluralize(event.Total, "step", "steps"),
-		)
+	if summary != "" {
+		return fmt.Sprintf("🧌 Goblin crew hauled %q out of the cave in %s. %s", event.WorkflowName, duration, summary)
 	}
 	return fmt.Sprintf("🧌 Goblin crew hauled %q out of the cave in %s.", event.WorkflowName, duration)
+}
+
+func (r *textRenderer) stepSummary() string {
+	total := r.stepsPassed + r.stepsFailed + r.stepsSkipped
+	if total == 0 {
+		return ""
+	}
+	if r.stepsFailed > 0 {
+		return fmt.Sprintf("💥 %d/%d passed, %d failed.", r.stepsPassed, total, r.stepsFailed)
+	}
+	if r.stepsSkipped > 0 {
+		return fmt.Sprintf("✅ %d/%d passed, %d skipped.", r.stepsPassed, total, r.stepsSkipped)
+	}
+	return fmt.Sprintf("✅ %d/%d passed.", r.stepsPassed, total)
 }
 
 func pluralize(count int, singular, plural string) string {
@@ -232,6 +273,9 @@ func pluralize(count int, singular, plural string) string {
 }
 
 func formatDuration(duration time.Duration) string {
+	if duration == 0 {
+		return "< 1ms"
+	}
 	if duration < time.Millisecond {
 		return duration.Round(time.Microsecond).String()
 	}

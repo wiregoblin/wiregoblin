@@ -144,13 +144,11 @@ func parse(data []byte) (*model.Definition, error) {
 		Name: raw.Name,
 	}
 
-	meta.Constants = appendSortedEntries(meta.Constants, raw.Constants, func(value string) string {
-		return value
-	})
+	meta.Constants = appendSortedEntries(meta.Constants, raw.Constants, resolveEnvRef)
 	meta.Secrets = appendSortedEntries(meta.Secrets, raw.Secrets, resolveEnvRef)
 
-	meta.Variables = append(meta.Variables, decodeEntries(&raw.Variables)...)
-	meta.SecretVariables = append(meta.SecretVariables, decodeEntries(&raw.SecretVariables)...)
+	meta.Variables = append(meta.Variables, decodeEntries(&raw.Variables, resolveEnvRef)...)
+	meta.SecretVariables = append(meta.SecretVariables, decodeEntries(&raw.SecretVariables, resolveEnvRef)...)
 
 	workflows := make(map[string]*model.Workflow, len(raw.Workflows))
 	for wfKey, rawWF := range raw.Workflows {
@@ -179,9 +177,7 @@ func parseWorkflow(key string, raw rawWorkflow, projectID string) (*model.Workfl
 		wf.Name = key
 	}
 
-	wf.Constants = appendSortedEntries(wf.Constants, raw.Constants, func(value string) string {
-		return value
-	})
+	wf.Constants = appendSortedEntries(wf.Constants, raw.Constants, resolveEnvRef)
 	wf.Secrets = appendSortedEntries(wf.Secrets, raw.Secrets, resolveEnvRef)
 	if len(raw.Outputs) != 0 {
 		wf.Outputs = make(map[string]string, len(raw.Outputs))
@@ -195,8 +191,8 @@ func parseWorkflow(key string, raw rawWorkflow, projectID string) (*model.Workfl
 		}
 	}
 
-	wf.Variables = append(wf.Variables, decodeEntries(&raw.Variables)...)
-	wf.SecretVariables = append(wf.SecretVariables, decodeEntries(&raw.SecretVariables)...)
+	wf.Variables = append(wf.Variables, decodeEntries(&raw.Variables, resolveEnvRef)...)
+	wf.SecretVariables = append(wf.SecretVariables, decodeEntries(&raw.SecretVariables, resolveEnvRef)...)
 
 	steps, err := parseBlocks(raw.Blocks)
 	if err != nil {
@@ -340,14 +336,23 @@ func convertAssignShorthand(v any) []any {
 
 func resolveEnvRef(v string) string {
 	if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
-		envName := v[2 : len(v)-1]
-		return os.Getenv(envName)
+		inner := v[2 : len(v)-1]
+		if idx := strings.Index(inner, ":="); idx != -1 {
+			envName := inner[:idx]
+			defaultVal := inner[idx+2:]
+			if val := os.Getenv(envName); val != "" {
+				return val
+			}
+			return defaultVal
+		}
+		return os.Getenv(inner)
 	}
 	return v
 }
 
 // decodeEntries accepts either a sequence of strings or a mapping of key/value pairs.
-func decodeEntries(node *yaml.Node) []model.Entry {
+// transform is applied to each value before storing.
+func decodeEntries(node *yaml.Node, transform func(string) string) []model.Entry {
 	if node == nil || node.Kind == 0 {
 		return nil
 	}
@@ -373,7 +378,7 @@ func decodeEntries(node *yaml.Node) []model.Entry {
 			}
 			entries = append(entries, model.Entry{
 				Key:   node.Content[i].Value,
-				Value: stringValue,
+				Value: transform(stringValue),
 			})
 		}
 		return entries

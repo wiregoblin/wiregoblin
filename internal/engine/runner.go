@@ -377,6 +377,10 @@ func (r *Runner) executeStep(
 		return nil, step, "", err
 	}
 
+	stepStart := time.Now()
+	runCtx.Builtins["BlockStartTime"] = stepStart.UTC().Format(time.RFC3339)
+	runCtx.Builtins["BlockStartUnix"] = fmt.Sprintf("%d", stepStart.Unix())
+
 	resolved := resolveStepConfig(blk, step, runCtx)
 	if err := validateStepCapabilities(blk, resolved); err != nil {
 		return nil, resolved, "", err

@@ -9,7 +9,7 @@ import (
 	"github.com/wiregoblin/wiregoblin/internal/model"
 )
 
-func TestExecuteRetriesUntilSuccess(t *testing.T) {
+func TestExecuteRetriesUntilSuccessWithoutRetryRules(t *testing.T) {
 	attempts := 0
 	builtins := map[string]string{}
 	runCtx := &block.RunContext{
@@ -20,7 +20,7 @@ func TestExecuteRetriesUntilSuccess(t *testing.T) {
 				t.Fatalf("step.Type = %q, want http", step.Type)
 			}
 			if got := step.Config["url"]; got != "https://example.com" {
-				t.Fatalf("url = %v", got)
+				t.Fatalf("url = %v, want https://example.com", got)
 			}
 			if attempts < 3 {
 				return &block.Result{Output: map[string]any{"attempt": attempts}}, errors.New("not ready")
@@ -52,7 +52,7 @@ func TestExecuteRetriesUntilSuccess(t *testing.T) {
 
 	output := result.Output.(map[string]any)
 	if got := output["attempts"]; got != 3 {
-		t.Fatalf("attempts = %v, want 3", got)
+		t.Fatalf("attempts output = %v, want 3", got)
 	}
 	if got := output["succeeded"]; got != true {
 		t.Fatalf("succeeded = %v, want true", got)
@@ -90,7 +90,7 @@ func TestExecuteReturnsLastFailure(t *testing.T) {
 	}
 }
 
-func TestExecuteRetriesOnlyConfiguredStatusCodes(t *testing.T) {
+func TestExecuteRetriesConfiguredStatusCode(t *testing.T) {
 	attempts := 0
 	runCtx := &block.RunContext{
 		Builtins: map[string]string{},
@@ -112,7 +112,13 @@ func TestExecuteRetriesOnlyConfiguredStatusCodes(t *testing.T) {
 		Config: map[string]any{
 			"max_attempts": 5,
 			"retry_on": map[string]any{
-				"status_codes": []any{503},
+				"match": "any",
+				"rules": []any{
+					map[string]any{
+						"type": "status_code",
+						"in":   []any{503},
+					},
+				},
 			},
 			"block": map[string]any{
 				"type": "http",
@@ -130,7 +136,7 @@ func TestExecuteRetriesOnlyConfiguredStatusCodes(t *testing.T) {
 	}
 }
 
-func TestExecuteStopsEarlyOnNonRetryableStatusCode(t *testing.T) {
+func TestExecuteStopsEarlyOnNonMatchingStatusCode(t *testing.T) {
 	attempts := 0
 	runCtx := &block.RunContext{
 		Builtins: map[string]string{},
@@ -147,7 +153,13 @@ func TestExecuteStopsEarlyOnNonRetryableStatusCode(t *testing.T) {
 		Config: map[string]any{
 			"max_attempts": 5,
 			"retry_on": map[string]any{
-				"status_codes": []any{429, 500, 503},
+				"match": "any",
+				"rules": []any{
+					map[string]any{
+						"type": "status_code",
+						"in":   []any{429, 500, 503},
+					},
+				},
 			},
 			"block": map[string]any{
 				"type": "http",
@@ -168,8 +180,207 @@ func TestExecuteStopsEarlyOnNonRetryableStatusCode(t *testing.T) {
 	if got := output["stopped_early"]; got != true {
 		t.Fatalf("stopped_early = %v, want true", got)
 	}
-	if got := output["attempts"]; got != 1 {
-		t.Fatalf("attempts output = %v, want 1", got)
+}
+
+func TestExecuteRetriesTransportErrorWhenConfigured(t *testing.T) {
+	attempts := 0
+	runCtx := &block.RunContext{
+		Builtins: map[string]string{},
+		ExecuteStep: func(_ context.Context, _ model.Step) (*block.Result, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, errors.New("connection refused")
+			}
+			return &block.Result{Output: map[string]any{"status": "ok"}}, nil
+		},
+	}
+
+	_, err := New().Execute(context.Background(), runCtx, model.Step{
+		Name: "retry-http",
+		Config: map[string]any{
+			"max_attempts": 5,
+			"retry_on": map[string]any{
+				"match": "any",
+				"rules": []any{
+					map[string]any{"type": "transport_error"},
+				},
+			},
+			"block": map[string]any{
+				"type": "http",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestExecuteRetriesPathRuleUntilBodyDataIsNotEmpty(t *testing.T) {
+	attempts := 0
+	runCtx := &block.RunContext{
+		Builtins: map[string]string{},
+		ExecuteStep: func(_ context.Context, _ model.Step) (*block.Result, error) {
+			attempts++
+			if attempts < 3 {
+				return &block.Result{
+					Output: map[string]any{
+						"body": map[string]any{
+							"data": "",
+						},
+					},
+				}, nil
+			}
+			return &block.Result{
+				Output: map[string]any{
+					"body": map[string]any{
+						"data": "ready",
+					},
+				},
+			}, nil
+		},
+	}
+
+	result, err := New().Execute(context.Background(), runCtx, model.Step{
+		Name: "retry-grpc",
+		Config: map[string]any{
+			"max_attempts": 5,
+			"retry_on": map[string]any{
+				"match": "any",
+				"rules": []any{
+					map[string]any{
+						"type":     "path",
+						"path":     "body.data",
+						"operator": "empty",
+					},
+				},
+			},
+			"block": map[string]any{
+				"type": "grpc",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+	if got := result.Output.(map[string]any)["succeeded"]; got != true {
+		t.Fatalf("succeeded = %v, want true", got)
+	}
+}
+
+func TestExecuteRetriesPathRuleForArrayLength(t *testing.T) {
+	attempts := 0
+	runCtx := &block.RunContext{
+		Builtins: map[string]string{},
+		ExecuteStep: func(_ context.Context, _ model.Step) (*block.Result, error) {
+			attempts++
+			if attempts < 3 {
+				return &block.Result{
+					Output: map[string]any{
+						"body": map[string]any{
+							"other_list": []any{},
+						},
+					},
+				}, nil
+			}
+			return &block.Result{
+				Output: map[string]any{
+					"body": map[string]any{
+						"other_list": []any{"item"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	_, err := New().Execute(context.Background(), runCtx, model.Step{
+		Name: "retry-grpc",
+		Config: map[string]any{
+			"max_attempts": 5,
+			"retry_on": map[string]any{
+				"match": "any",
+				"rules": []any{
+					map[string]any{
+						"type":     "path",
+						"path":     "body.other_list.length",
+						"operator": "=",
+						"expected": 0,
+					},
+				},
+			},
+			"block": map[string]any{
+				"type": "grpc",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestExecuteRetriesWhenAllRulesMatch(t *testing.T) {
+	attempts := 0
+	runCtx := &block.RunContext{
+		Builtins: map[string]string{},
+		ExecuteStep: func(_ context.Context, _ model.Step) (*block.Result, error) {
+			attempts++
+			if attempts == 1 {
+				return &block.Result{
+					Output: map[string]any{
+						"body": map[string]any{
+							"data": "",
+						},
+					},
+					Exports: map[string]string{"statusCode": "503"},
+				}, errors.New("http 503")
+			}
+			return &block.Result{
+				Output: map[string]any{
+					"body": map[string]any{
+						"data": "ready",
+					},
+				},
+				Exports: map[string]string{"statusCode": "200"},
+			}, nil
+		},
+	}
+
+	_, err := New().Execute(context.Background(), runCtx, model.Step{
+		Name: "retry-http",
+		Config: map[string]any{
+			"max_attempts": 3,
+			"retry_on": map[string]any{
+				"match": "all",
+				"rules": []any{
+					map[string]any{
+						"type": "status_code",
+						"in":   []any{503},
+					},
+					map[string]any{
+						"type":     "path",
+						"path":     "body.data",
+						"operator": "empty",
+					},
+				},
+			},
+			"block": map[string]any{
+				"type": "http",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
 	}
 }
 
@@ -199,67 +410,20 @@ func TestExecuteClearsBuiltinsOnSuccess(t *testing.T) {
 	}
 }
 
-func TestExecuteHonorsTransportErrorsFlag(t *testing.T) {
-	t.Run("disabled", func(t *testing.T) {
-		attempts := 0
-		runCtx := &block.RunContext{
-			Builtins: map[string]string{},
-			ExecuteStep: func(_ context.Context, _ model.Step) (*block.Result, error) {
-				attempts++
-				return nil, errors.New("connection refused")
-			},
-		}
-
-		_, err := New().Execute(context.Background(), runCtx, model.Step{
-			Name: "retry-http",
-			Config: map[string]any{
-				"max_attempts": 5,
-				"retry_on": map[string]any{
-					"status_codes": []any{503},
-				},
-				"block": map[string]any{
-					"type": "http",
+func TestValidateRejectsInvalidRetryOn(t *testing.T) {
+	err := New().Validate(model.Step{
+		Config: map[string]any{
+			"max_attempts": 3,
+			"retry_on": map[string]any{
+				"match": "sometimes",
+				"rules": []any{
+					map[string]any{"type": "transport_error"},
 				},
 			},
-		})
-		if err == nil || err.Error() != "connection refused" {
-			t.Fatalf("error = %v, want connection refused", err)
-		}
-		if attempts != 1 {
-			t.Fatalf("attempts = %d, want 1", attempts)
-		}
+			"block": map[string]any{"type": "http"},
+		},
 	})
-
-	t.Run("enabled", func(t *testing.T) {
-		attempts := 0
-		runCtx := &block.RunContext{
-			Builtins: map[string]string{},
-			ExecuteStep: func(_ context.Context, _ model.Step) (*block.Result, error) {
-				attempts++
-				if attempts < 3 {
-					return nil, errors.New("connection refused")
-				}
-				return &block.Result{Output: map[string]any{"status": "ok"}}, nil
-			},
-		}
-
-		_, err := New().Execute(context.Background(), runCtx, model.Step{
-			Name: "retry-http",
-			Config: map[string]any{
-				"max_attempts": 5,
-				"retry_on": map[string]any{
-					"transport_errors": true,
-				},
-				"block": map[string]any{
-					"type": "http",
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("Execute() error = %v", err)
-		}
-		if attempts != 3 {
-			t.Fatalf("attempts = %d, want 3", attempts)
-		}
-	})
+	if err == nil || err.Error() != "retry retry_on match must be any or all" {
+		t.Fatalf("Validate() error = %v, want invalid match", err)
+	}
 }

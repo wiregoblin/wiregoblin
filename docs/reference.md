@@ -24,6 +24,80 @@ Every block is a step in a workflow. All steps share a set of common fields; the
 
 ---
 
+## Environment variable injection
+
+Any value in `constants`, `secrets`, `variables`, or `secret_variables` — at both the project level and the workflow level — can reference an environment variable using `${VAR}` syntax.
+
+| Syntax | Behaviour |
+|--------|-----------|
+| `"${VAR}"` | Replaced with the value of `$VAR`; empty string if the variable is not set |
+| `"${VAR:=default}"` | Replaced with the value of `$VAR`; falls back to `default` if the variable is unset or empty |
+
+The substitution happens at config load time, before the workflow runs.
+
+```yaml
+constants:
+  api_host: "${API_HOST:=https://api.example.com}"
+
+secrets:
+  api_token: "${API_TOKEN}"
+
+variables:
+  page_size: "${PAGE_SIZE:=20}"
+
+secret_variables:
+  session_token: "${SESSION_TOKEN:=}"
+```
+
+Use `-e` to load a `.env` file before running:
+
+```bash
+wiregoblin-cli run -e .env my_workflow
+```
+
+---
+
+## Global built-ins
+
+Available in every step of every workflow via `!name`.
+
+| Built-in | Example value | Description |
+|----------|---------------|-------------|
+| `!RunID` | `"f47ac10b-58cc-..."` | Unique UUID generated at the start of each run — useful as a correlation ID |
+| `!StartTime` | `"2026-04-01T12:00:00Z"` | Workflow start time in RFC 3339 (UTC) |
+| `!StartUnix` | `"1743508800"` | Workflow start time as Unix epoch seconds — useful for TTL/expiry arithmetic |
+| `!StartDate` | `"2026-04-01"` | Workflow start date (`YYYY-MM-DD`, UTC) |
+| `!ProjectID` | `"my-project"` | ID of the project this workflow belongs to |
+| `!WorkflowID` | `"create_user"` | ID of the current workflow |
+| `!WorkflowName` | `"Create User"` | Display name of the current workflow |
+| `!BlockStartTime` | `"2026-04-01T12:00:05Z"` | Start time of the current step in RFC 3339 (UTC) |
+| `!BlockStartUnix` | `"1743508805"` | Start time of the current step as Unix epoch seconds |
+
+### Error built-ins
+
+Populated automatically when a step fails and the workflow has `on_error` steps.
+
+| Built-in | Description |
+|----------|-------------|
+| `!ErrorMessage` | Error message from the failed step |
+| `!ErrorBlockID` | `id` of the failed step |
+| `!ErrorBlockName` | `name` of the failed step |
+| `!ErrorBlockType` | Block type of the failed step |
+| `!ErrorBlockIndex` | 1-based index of the failed step |
+
+### Parent built-ins
+
+Populated inside a child workflow invoked via a `workflow` block.
+
+| Built-in | Description |
+|----------|-------------|
+| `!Parent.WorkflowID` | Parent workflow ID |
+| `!Parent.WorkflowName` | Parent workflow name |
+| `!Parent.RunID` | Parent run ID |
+| `!Parent.StartTime` | Parent start time |
+
+---
+
 ## Blocks
 
 | Block | Description |
@@ -638,9 +712,14 @@ Retries one nested block with exponential backoff.
 | `block` | object | yes | | The block to retry (any block type) |
 | `max_attempts` | int | no | `1` | Maximum number of attempts |
 | `delay_ms` | int | no | | Initial delay before first retry; doubles after each failure |
-| `retry_on` | object | no | | Limits which errors trigger a retry |
-| `retry_on.status_codes` | []int | no | | HTTP/gRPC status codes that should be retried |
-| `retry_on.transport_errors` | bool | no | `false` | Retry on connection/transport failures |
+| `retry_on` | object | no | | Rules that decide whether another attempt should run |
+| `retry_on.match` | string | no | `any` | `any` retries when one rule matches; `all` requires every rule to match |
+| `retry_on.rules` | []object | yes* | | Retry rules evaluated against the last result/error when `retry_on` is present |
+| `retry_on.rules[].type` | string | yes | | One of `transport_error`, `status_code`, `path` |
+| `retry_on.rules[].in` | []int | status_code | | Status codes that should be retried |
+| `retry_on.rules[].path` | string | path | | Result path such as `body.data` or `body.items.length` |
+| `retry_on.rules[].operator` | string | path | | One of `empty`, `not_empty`, `=`, `!=`, `>`, `<`, `>=`, `<=` |
+| `retry_on.rules[].expected` | any | path* | | Required for comparison operators other than `empty` and `not_empty` |
 
 **Built-ins available inside `block`:**
 
@@ -655,8 +734,18 @@ Retries one nested block with exponential backoff.
   max_attempts: 5
   delay_ms: 500
   retry_on:
-    status_codes: [429, 500, 502, 503]
-    transport_errors: true
+    match: "any"
+    rules:
+      - type: "transport_error"
+      - type: "status_code"
+        in: [429, 500, 502, 503]
+      - type: "path"
+        path: "body.data"
+        operator: "empty"
+      - type: "path"
+        path: "body.items.length"
+        operator: "="
+        expected: 0
   block:
     type: "http"
     method: "GET"

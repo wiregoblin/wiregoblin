@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/pflag"
 
 	cliapp "github.com/wiregoblin/wiregoblin/internal/app/cli"
@@ -46,9 +47,11 @@ func runCmd(args []string) {
 	fs.Usage = func() { fmt.Fprint(os.Stderr, runUsageText) }
 
 	var projectPath string
+	var envFile string
 	var verbosity int
 	var jsonOutput bool
 	fs.StringVarP(&projectPath, "project", "p", "", "Path to the project YAML config file")
+	fs.StringVarP(&envFile, "env", "e", "", "Path to a .env file to load before running")
 	fs.CountVarP(&verbosity, "verbose", "v", "Increase execution detail level: -v, -vv, -vvv")
 	fs.BoolVar(&jsonOutput, "json", false, "Print workflow results as JSON to stdout")
 
@@ -57,6 +60,13 @@ func runCmd(args []string) {
 			fmt.Fprintln(os.Stderr, err)
 		}
 		os.Exit(1)
+	}
+
+	if envFile != "" {
+		if err := godotenv.Load(envFile); err != nil {
+			fmt.Fprintf(os.Stderr, "load env file %s: %v\n", envFile, err)
+			os.Exit(1)
+		}
 	}
 
 	if verbosity > 3 {
@@ -142,6 +152,7 @@ Examples:
   wiregoblin-cli run http_example
   wiregoblin-cli run -p config/myproject.yaml     # run all workflows from a specific config
   wiregoblin-cli run -p config/myproject.yaml http_example
+  wiregoblin-cli run -e .env -p config/myproject.yaml http_example
   wiregoblin-cli run -v -p config/myproject.yaml http_example
   wiregoblin-cli run --json -p config/myproject.yaml http_example
 `
@@ -155,6 +166,7 @@ If workflow_id is omitted, all workflows are run sequentially in alphabetical or
 
 Flags:
   -p, --project  Path to the project YAML config file
+  -e, --env      Path to a .env file to load before running
   -v, --verbose  Increase execution detail level: -v, -vv, -vvv
       --json     Print workflow results as JSON to stdout
 `

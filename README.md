@@ -15,9 +15,12 @@ go install github.com/wiregoblin/wiregoblin/cmd/wiregoblin-cli@latest
 ```bash
 wiregoblin-cli run <workflow_id>
 wiregoblin-cli run -p config/example.project.yaml http_example
+wiregoblin-cli run -e .env -p config/example.project.yaml http_example
 ```
 
 If `-p` is omitted, WireGoblin looks for `wiregoblin.yaml` or `wiregoblin.yml` in the current directory.
+
+Use `-e` to load a `.env` file before running. Variables from the file are injected into the process environment and resolved in all `${VAR}` / `${VAR:=default}` references in the config.
 
 **Verbosity:**
 
@@ -36,13 +39,13 @@ id: "my-project"
 name: "My Project"
 
 constants:
-  api_host: "https://api.example.com"
+  api_host: "${API_HOST:=https://api.example.com}"
 
 secrets:
   api_token: "${API_TOKEN}"
 
 variables:
-  page_size: "20"
+  page_size: "${PAGE_SIZE:=20}"
 
 secret_variables:
   session_token: ""
@@ -75,7 +78,7 @@ workflows:
 |--------|-------------|
 | `$name` | Runtime variable or secret variable |
 | `@name` | Constant or secret |
-| `!name` | Built-in: `!ErrorMessage`, `!ErrorBlockID`, `!Parent.WorkflowID`, etc. |
+| `!name` | Built-in: `!RunID`, `!StartTime`, `!WorkflowID`, `!ErrorMessage`, `!Parent.WorkflowID`, etc. |
 
 Interpolation works inside any string field: `"Bearer @token"`, `"Hello, $user!"`.
 
@@ -119,7 +122,7 @@ Interpolation works inside any string field: `"Bearer @token"`, `"Hello, $user!"
 | `parallel` | Run heterogeneous blocks concurrently |
 | `workflow` | Invoke a nested workflow |
 
-Full field reference, exports, and examples: **[docs/blocks.md](docs/blocks.md)**
+Full field reference, exports, and examples: **[docs/reference.md](docs/reference.md)**
 
 ## Docker
 

@@ -2,6 +2,7 @@ package retry
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -18,9 +19,17 @@ type retryConfig struct {
 }
 
 type retryOnConfig struct {
-	StatusCodes     []int
-	TransportErrors bool
-	Enabled         bool
+	Match   string
+	Rules   []retryRule
+	Enabled bool
+}
+
+type retryRule struct {
+	Type     string
+	Path     string
+	Operator string
+	Expected any
+	In       []int
 }
 
 func decodeConfig(step model.Step) (retryConfig, error) {
@@ -46,17 +55,19 @@ func decodeConfig(step model.Step) (retryConfig, error) {
 }
 
 func decodeRetryOn(raw any) retryOnConfig {
-	switch typed := raw.(type) {
-	case map[string]any:
-		config := retryOnConfig{Enabled: true}
-		if value, ok := typed["transport_errors"].(bool); ok {
-			config.TransportErrors = value
-		}
-		config.StatusCodes = decodeIntSlice(typed["status_codes"])
-		return config
-	default:
+	typed, ok := raw.(map[string]any)
+	if !ok {
 		return retryOnConfig{}
 	}
+	config := retryOnConfig{
+		Match:   "any",
+		Enabled: true,
+	}
+	if value, ok := typed["match"].(string); ok {
+		config.Match = strings.ToLower(strings.TrimSpace(value))
+	}
+	config.Rules = decodeRetryRules(typed["rules"])
+	return config
 }
 
 func decodeIntSlice(raw any) []int {
@@ -74,6 +85,89 @@ func decodeIntSlice(raw any) []int {
 		return nil
 	}
 	return result
+}
+
+func decodeRetryRules(raw any) []retryRule {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	rules := make([]retryRule, 0, len(items))
+	for _, item := range items {
+		typed, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		rule := retryRule{}
+		if value, ok := typed["type"].(string); ok {
+			rule.Type = strings.ToLower(strings.TrimSpace(value))
+		}
+		if value, ok := typed["path"].(string); ok {
+			rule.Path = strings.TrimSpace(value)
+		}
+		if value, ok := typed["operator"].(string); ok {
+			rule.Operator = strings.TrimSpace(value)
+		}
+		rule.Expected = typed["expected"]
+		rule.In = decodeIntSlice(typed["in"])
+		if rule.Type != "" {
+			rules = append(rules, rule)
+		}
+	}
+	if len(rules) == 0 {
+		return nil
+	}
+	return rules
+}
+
+func (c retryOnConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Match != "any" && c.Match != "all" {
+		return fmt.Errorf("retry retry_on match must be any or all")
+	}
+	if len(c.Rules) == 0 {
+		return fmt.Errorf("retry retry_on must define at least one rule")
+	}
+	for index, rule := range c.Rules {
+		if err := rule.Validate(); err != nil {
+			return fmt.Errorf("retry retry_on rule %d: %w", index+1, err)
+		}
+	}
+	return nil
+}
+
+func (r retryRule) Validate() error {
+	switch r.Type {
+	case "transport_error":
+		return nil
+	case "status_code":
+		if len(r.In) == 0 {
+			return fmt.Errorf("status_code rule must define in")
+		}
+		return nil
+	case "path":
+		if r.Path == "" {
+			return fmt.Errorf("path rule path is required")
+		}
+		if strings.TrimSpace(r.Operator) == "" {
+			return fmt.Errorf("path rule operator is required")
+		}
+		switch strings.ToLower(strings.TrimSpace(r.Operator)) {
+		case "empty", "not_empty":
+			return nil
+		case "=", "!=", ">", "<", ">=", "<=":
+			if r.Expected == nil {
+				return fmt.Errorf("path rule expected is required")
+			}
+			return nil
+		default:
+			return fmt.Errorf("path rule operator %q is not supported", r.Operator)
+		}
+	default:
+		return fmt.Errorf("rule type %q is not supported", r.Type)
+	}
 }
 
 func decodeInt(raw any) (int, bool) {

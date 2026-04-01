@@ -362,8 +362,11 @@ workflows:
         max_attempts: 5
         delay_ms: 100
         retry_on:
-          status_codes: [429, 500, 502, 503]
-          transport_errors: true
+          match: "any"
+          rules:
+            - type: "transport_error"
+            - type: "status_code"
+              in: [429, 500, 502, 503]
         block:
           type: "http"
           method: "GET"
