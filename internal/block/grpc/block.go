@@ -37,7 +37,7 @@ func (b *Block) ReferencePolicy() []block.ReferencePolicy {
 	return []block.ReferencePolicy{
 		{Field: "address", Constants: true},
 		{Field: "method", Constants: true, Variables: true, InlineOnly: true},
-		{Field: "tls", Constants: false},
+		{Field: "tls", Constants: true, Variables: true},
 		{Field: "request", Constants: true, Variables: true, InlineOnly: true},
 		{Field: "metadata", Constants: true, Variables: true, InlineOnly: true},
 	}

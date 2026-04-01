@@ -4,6 +4,7 @@ package filerepository
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -23,13 +24,52 @@ func New(path string) *Repository {
 	return &Repository{path: path}
 }
 
+// ProjectID loads the project file and returns the project's ID.
+func (r *Repository) ProjectID(ctx context.Context) (string, error) {
+	def, err := r.GetProject(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	return def.Meta.ID, nil
+}
+
 // GetProject loads and parses one project definition from disk.
-func (r *Repository) GetProject(_ context.Context) (*model.Definition, error) {
+// projectID is ignored since the file repository is scoped to a single project.
+func (r *Repository) GetProject(_ context.Context, _ string) (*model.Definition, error) {
 	data, err := os.ReadFile(r.path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", r.path, err)
 	}
 	return parse(data)
+}
+
+// GetWorkflow returns the workflow with the given ID from the project.
+// projectID is ignored since the file repository is scoped to a single project.
+func (r *Repository) GetWorkflow(ctx context.Context, _ string, workflowID string) (*model.Workflow, error) {
+	def, err := r.GetProject(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	wf, ok := def.Workflows[workflowID]
+	if !ok {
+		return nil, fmt.Errorf("workflow %q not found; available: %v", workflowID, slices.Sorted(maps.Keys(def.Workflows)))
+	}
+	return wf, nil
+}
+
+// ListWorkflows returns all workflow IDs defined in the project, sorted alphabetically.
+// projectID is ignored since the file repository is scoped to a single project.
+func (r *Repository) ListWorkflows(ctx context.Context, _ string) ([]string, error) {
+	def, err := r.GetProject(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(def.Workflows))
+	for name := range def.Workflows {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names, nil
 }
 
 type rawConfig struct {
@@ -47,6 +87,7 @@ type rawWorkflow struct {
 	Name             string            `yaml:"name"`
 	TimeoutSeconds   int               `yaml:"timeout_seconds"`
 	Constants        map[string]string `yaml:"constants"`
+	Secrets          map[string]string `yaml:"secrets"`
 	Outputs          map[string]string `yaml:"outputs"`
 	Variables        yaml.Node         `yaml:"variables"`
 	SecretVariables  yaml.Node         `yaml:"secret_variables"`
@@ -141,6 +182,7 @@ func parseWorkflow(key string, raw rawWorkflow, projectID string) (*model.Workfl
 	wf.Constants = appendSortedEntries(wf.Constants, raw.Constants, func(value string) string {
 		return value
 	})
+	wf.Secrets = appendSortedEntries(wf.Secrets, raw.Secrets, resolveEnvRef)
 	if len(raw.Outputs) != 0 {
 		wf.Outputs = make(map[string]string, len(raw.Outputs))
 		for key, value := range raw.Outputs {

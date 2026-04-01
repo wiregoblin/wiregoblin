@@ -24,7 +24,6 @@ import (
 	transformblock "github.com/wiregoblin/wiregoblin/internal/block/transform"
 	workflowblock "github.com/wiregoblin/wiregoblin/internal/block/workflow"
 	"github.com/wiregoblin/wiregoblin/internal/engine"
-	"github.com/wiregoblin/wiregoblin/internal/model"
 	"github.com/wiregoblin/wiregoblin/internal/repository"
 	filerepository "github.com/wiregoblin/wiregoblin/internal/repository/file"
 	workflowservice "github.com/wiregoblin/wiregoblin/internal/service/workflow"
@@ -45,13 +44,9 @@ func New(projectPath string) *App {
 	}
 }
 
-// RunWorkflow starts streaming events for one workflow run.
-func (a *App) RunWorkflow(
-	ctx context.Context,
-	workflowName string,
-	opts workflowservice.RunOptions,
-) (<-chan model.RunEvent, error) {
-	return a.service.RunWorkflow(ctx, workflowName, opts)
+// projectID resolves the current project ID from the repository.
+func (a *App) projectID(ctx context.Context) (string, error) {
+	return a.projects.ProjectID(ctx)
 }
 
 // newRegistry builds the block registry used by the workflow engine.

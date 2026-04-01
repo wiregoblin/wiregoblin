@@ -10,16 +10,18 @@ const (
 
 // RunEvent is one streamed workflow execution event.
 type RunEvent struct {
-	Type       string         `json:"type"`
-	Project    string         `json:"project,omitempty"`
-	Workflow   string         `json:"workflow,omitempty"`
-	Index      int            `json:"index,omitempty"`
-	Total      int            `json:"total,omitempty"`
-	Step       string         `json:"step,omitempty"`
-	StepType   string         `json:"step_type,omitempty"`
-	Status     string         `json:"status,omitempty"`
-	DurationMS int64          `json:"duration_ms,omitempty"`
-	Request    map[string]any `json:"request,omitempty"`
-	Response   any            `json:"response,omitempty"`
-	Error      string         `json:"error,omitempty"`
+	Type         string         `json:"type"`
+	ProjectID    string         `json:"project_id,omitempty"`
+	ProjectName  string         `json:"project_name,omitempty"`
+	WorkflowID   string         `json:"workflow_id,omitempty"`
+	WorkflowName string         `json:"workflow_name,omitempty"`
+	Index        int            `json:"index,omitempty"`
+	Total        int            `json:"total,omitempty"`
+	Step         string         `json:"step,omitempty"`
+	StepType     string         `json:"step_type,omitempty"`
+	Status       string         `json:"status,omitempty"`
+	DurationMS   int64          `json:"duration_ms,omitempty"`
+	Request      map[string]any `json:"request,omitempty"`
+	Response     any            `json:"response,omitempty"`
+	Error        string         `json:"error,omitempty"`
 }

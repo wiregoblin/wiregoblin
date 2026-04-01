@@ -4,8 +4,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"maps"
-	"slices"
 	"time"
 
 	"github.com/wiregoblin/wiregoblin/internal/block"
@@ -16,7 +14,9 @@ import (
 
 type (
 	projectRepository interface {
-		GetProject(ctx context.Context) (*model.Definition, error)
+		GetProject(ctx context.Context, projectID string) (*model.Definition, error)
+		GetWorkflow(ctx context.Context, projectID string, workflowID string) (*model.Workflow, error)
+		ListWorkflows(ctx context.Context, projectID string) ([]string, error)
 	}
 
 	blockRegistry interface {
@@ -47,24 +47,26 @@ func (s *Service) Close() {
 	s.registry.Close()
 }
 
+// ListWorkflows returns all workflow IDs defined in the project, sorted alphabetically.
+func (s *Service) ListWorkflows(ctx context.Context, projectID string) ([]string, error) {
+	return s.projects.ListWorkflows(ctx, projectID)
+}
+
 // RunWorkflow validates setup and returns a stream of execution events.
 func (s *Service) RunWorkflow(
 	ctx context.Context,
-	workflowName string,
+	projectID string,
+	workflowID string,
 	opts RunOptions,
 ) (<-chan model.RunEvent, error) {
-	project, err := s.projects.GetProject(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("load project: %w", err)
-	}
-
-	if len(project.Workflows) == 0 {
-		return nil, fmt.Errorf("project %q has no workflows defined", project.Meta.Name)
-	}
-
-	wfDef, err := pickWorkflow(project, workflowName)
+	wfDef, err := s.projects.GetWorkflow(ctx, projectID, workflowID)
 	if err != nil {
 		return nil, err
+	}
+
+	project, err := s.projects.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("load project %s: %w", projectID, err)
 	}
 
 	events := make(chan model.RunEvent)
@@ -87,18 +89,20 @@ func (s *Service) executeWorkflow(
 	startedAt := time.Now()
 	secretValues := secretValuesFromProject(projectMeta)
 	events <- model.RunEvent{
-		Type:     model.EventWorkflowStarted,
-		Project:  projectMeta.Name,
-		Workflow: wfDef.Name,
-		Total:    len(wfDef.Steps),
-		Status:   "running",
+		Type:         model.EventWorkflowStarted,
+		ProjectID:    projectMeta.ID,
+		ProjectName:  projectMeta.Name,
+		WorkflowID:   wfDef.ID,
+		WorkflowName: wfDef.Name,
+		Total:        len(wfDef.Steps),
+		Status:       "running",
 	}
 
 	if len(wfDef.Steps) == 0 {
 		s.emitWorkflowFinished(
 			events,
-			projectMeta.Name,
-			wfDef.Name,
+			projectMeta.ID, projectMeta.Name,
+			wfDef.ID, wfDef.Name,
 			len(wfDef.Steps),
 			startedAt,
 			fmt.Errorf("workflow %q has no steps defined", wfDef.Name),
@@ -107,43 +111,47 @@ func (s *Service) executeWorkflow(
 		return
 	}
 
-	streamObserver := newChannelObserver(projectMeta.Name, wfDef.Name, events)
+	streamObserver := newChannelObserver(projectMeta.ID, projectMeta.Name, wfDef.ID, wfDef.Name, secretValues, events)
 	observer := buildObserver(opts.Observer, streamObserver)
 
 	r := engine.New(s.registry, observer)
 	_, runErr := r.RunWithWorkflows(resolveContext(opts.Context), projectMeta, workflows, wfDef)
-	s.emitWorkflowFinished(events, projectMeta.Name, wfDef.Name, len(wfDef.Steps), startedAt, runErr, secretValues)
+	s.emitWorkflowFinished(
+		events,
+		projectMeta.ID,
+		projectMeta.Name,
+		wfDef.ID,
+		wfDef.Name,
+		len(wfDef.Steps),
+		startedAt,
+		runErr,
+		secretValues,
+	)
 }
 
 func (s *Service) emitWorkflowFinished(
 	events chan<- model.RunEvent,
-	projectName, workflowName string,
+	projectID, projectName, workflowID, workflowName string,
 	total int,
 	startedAt time.Time,
 	runErr error,
 	secretValues []string,
 ) {
 	event := model.RunEvent{
-		Type:       model.EventWorkflowFinished,
-		Project:    projectName,
-		Workflow:   workflowName,
-		Total:      total,
-		Status:     "ok",
-		DurationMS: time.Since(startedAt).Milliseconds(),
+		Type:         model.EventWorkflowFinished,
+		ProjectID:    projectID,
+		ProjectName:  projectName,
+		WorkflowID:   workflowID,
+		WorkflowName: workflowName,
+		Total:        total,
+		Status:       "ok",
+		DurationMS:   time.Since(startedAt).Milliseconds(),
 	}
 	if runErr != nil {
 		event.Status = "failed"
 		event.Error = redact.String(runErr.Error(), secretValues)
 	}
 	events <- event
-}
-
-func pickWorkflow(project *model.Definition, workflowName string) (*model.Workflow, error) {
-	wf, ok := project.Workflows[workflowName]
-	if !ok {
-		return nil, fmt.Errorf("workflow %q not found; available: %v", workflowName, sortedKeys(project.Workflows))
-	}
-	return wf, nil
 }
 
 type multiObserver struct {
@@ -162,48 +170,67 @@ func (o multiObserver) OnStepFinish(event model.StepFinishEvent) {
 }
 
 type channelObserver struct {
+	projectID    string
 	projectName  string
+	workflowID   string
 	workflowName string
+	secretValues []string
 	events       chan<- model.RunEvent
 }
 
-func newChannelObserver(projectName, workflowName string, events chan<- model.RunEvent) *channelObserver {
+func newChannelObserver(
+	projectID, projectName,
+	workflowID, workflowName string,
+	secretValues []string,
+	events chan<- model.RunEvent,
+) *channelObserver {
 	return &channelObserver{
+		projectID:    projectID,
 		projectName:  projectName,
+		workflowID:   workflowID,
 		workflowName: workflowName,
+		secretValues: secretValues,
 		events:       events,
 	}
 }
 
 func (o *channelObserver) OnStepStart(event model.StepStartEvent) {
 	o.events <- model.RunEvent{
-		Type:     model.EventStepStarted,
-		Project:  o.projectName,
-		Workflow: o.workflowName,
-		Index:    event.Index,
-		Total:    event.Total,
-		Step:     event.Step.Name,
-		StepType: string(event.Step.Type),
-		Status:   "running",
+		Type:         model.EventStepStarted,
+		ProjectID:    o.projectID,
+		ProjectName:  o.projectName,
+		WorkflowID:   o.workflowID,
+		WorkflowName: o.workflowName,
+		Index:        event.Index,
+		Total:        event.Total,
+		Step:         event.Step.Name,
+		StepType:     string(event.Step.Type),
+		Status:       "running",
 	}
 }
 
 func (o *channelObserver) OnStepFinish(event model.StepFinishEvent) {
 	runEvent := model.RunEvent{
-		Type:       model.EventStepFinished,
-		Project:    o.projectName,
-		Workflow:   o.workflowName,
-		Index:      event.Index,
-		Total:      event.Total,
-		Step:       event.Step.Name,
-		StepType:   string(event.Step.Type),
-		Status:     event.Status,
-		DurationMS: event.Duration.Milliseconds(),
-		Request:    event.Request,
-		Response:   event.Response,
+		Type:         model.EventStepFinished,
+		ProjectID:    o.projectID,
+		ProjectName:  o.projectName,
+		WorkflowID:   o.workflowID,
+		WorkflowName: o.workflowName,
+		Index:        event.Index,
+		Total:        event.Total,
+		Step:         event.Step.Name,
+		StepType:     string(event.Step.Type),
+		Status:       event.Status,
+		DurationMS:   event.Duration.Milliseconds(),
+		Response:     redact.Value(event.Response, o.secretValues),
+	}
+	if event.Request != nil {
+		if m, ok := redact.Value(event.Request, o.secretValues).(map[string]any); ok {
+			runEvent.Request = m
+		}
 	}
 	if event.Error != nil {
-		runEvent.Error = event.Error.Error()
+		runEvent.Error = redact.String(event.Error.Error(), o.secretValues)
 	}
 	o.events <- runEvent
 }
@@ -220,10 +247,6 @@ func resolveContext(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.Background()
-}
-
-func sortedKeys(m map[string]*model.Workflow) []string {
-	return slices.Sorted(maps.Keys(m))
 }
 
 func secretValuesFromProject(project *model.Project) []string {

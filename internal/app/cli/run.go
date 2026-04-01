@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 	"time"
 
@@ -23,29 +22,60 @@ type ExecuteOptions struct {
 	Stderr     io.Writer
 }
 
-// ExecuteWorkflow runs one workflow and renders the event stream for CLI users.
-func (a *App) ExecuteWorkflow(ctx context.Context, workflowName string, opts ExecuteOptions) error {
-	secretValues := a.secretValues()
-	events, err := a.RunWorkflow(ctx, workflowName, opts.RunOptions)
+// Run runs one workflow if workflowID is set, or all project workflows sequentially if nil.
+func (a *App) Run(ctx context.Context, workflowID *string, opts ExecuteOptions) error {
+	projectID, err := a.projectID(ctx)
 	if err != nil {
 		if !opts.JSONOutput {
 			_, _ = fmt.Fprintln(opts.Stderr, err)
 		}
 		return err
 	}
-	return streamWorkflow(
-		events,
-		secretValues,
-		opts.Verbosity,
-		opts.JSONOutput,
-		opts.Stdout,
-		opts.Stderr,
-	)
+
+	if workflowID != nil {
+		return a.executeWorkflow(ctx, projectID, *workflowID, opts)
+	}
+
+	names, err := a.service.ListWorkflows(ctx, projectID)
+	if err != nil {
+		if !opts.JSONOutput {
+			_, _ = fmt.Fprintln(opts.Stderr, err)
+		}
+		return err
+	}
+	for _, name := range names {
+		if err := a.executeWorkflow(ctx, projectID, name, opts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ExecuteWorkflow runs one workflow and renders the event stream for CLI users.
+func (a *App) ExecuteWorkflow(ctx context.Context, workflowName string, opts ExecuteOptions) error {
+	projectID, err := a.projectID(ctx)
+	if err != nil {
+		if !opts.JSONOutput {
+			_, _ = fmt.Fprintln(opts.Stderr, err)
+		}
+		return err
+	}
+	return a.executeWorkflow(ctx, projectID, workflowName, opts)
+}
+
+func (a *App) executeWorkflow(ctx context.Context, projectID, workflowName string, opts ExecuteOptions) error {
+	events, err := a.service.RunWorkflow(ctx, projectID, workflowName, opts.RunOptions)
+	if err != nil {
+		if !opts.JSONOutput {
+			_, _ = fmt.Fprintln(opts.Stderr, err)
+		}
+		return err
+	}
+	return streamWorkflow(events, opts.Verbosity, opts.JSONOutput, opts.Stdout, opts.Stderr)
 }
 
 func streamWorkflow(
 	events <-chan model.RunEvent,
-	secretValues []string,
 	verbosity int,
 	jsonOutput bool,
 	stdout, stderr io.Writer,
@@ -53,7 +83,6 @@ func streamWorkflow(
 	var runErr error
 	text := newTextRenderer(stderr, verbosity)
 	for event := range events {
-		event = redactRunEvent(event, secretValues)
 		if jsonOutput {
 			if err := printEventJSON(stdout, event); err != nil {
 				return err
@@ -67,78 +96,6 @@ func streamWorkflow(
 		}
 	}
 	return runErr
-}
-
-func (a *App) secretValues() []string {
-	if a.projects == nil {
-		return nil
-	}
-
-	project, err := a.projects.GetProject(context.Background())
-	if err != nil || project == nil || project.Meta == nil {
-		return nil
-	}
-
-	values := make([]string, 0, len(project.Meta.Secrets))
-	for _, entry := range project.Meta.Secrets {
-		if entry.Value != "" {
-			values = append(values, entry.Value)
-		}
-	}
-
-	slices.Sort(values)
-	return slices.Compact(values)
-}
-
-func redactRunEvent(event model.RunEvent, secretValues []string) model.RunEvent {
-	if len(secretValues) == 0 {
-		return event
-	}
-
-	event.Error = redactString(event.Error, secretValues)
-	event.Request = redactMap(event.Request, secretValues)
-	event.Response = redactValue(event.Response, secretValues)
-	return event
-}
-
-func redactMap(input map[string]any, secretValues []string) map[string]any {
-	if input == nil {
-		return nil
-	}
-
-	output := make(map[string]any, len(input))
-	for key, value := range input {
-		output[key] = redactValue(value, secretValues)
-	}
-	return output
-}
-
-func redactValue(value any, secretValues []string) any {
-	switch typed := value.(type) {
-	case string:
-		return redactString(typed, secretValues)
-	case map[string]any:
-		return redactMap(typed, secretValues)
-	case []any:
-		items := make([]any, len(typed))
-		for index, item := range typed {
-			items[index] = redactValue(item, secretValues)
-		}
-		return items
-	default:
-		return value
-	}
-}
-
-func redactString(value string, secretValues []string) string {
-	redacted := value
-	for _, secret := range secretValues {
-		if secret == "" {
-			continue
-		}
-		redacted = strings.ReplaceAll(redacted, secret, "[REDACTED]")
-	}
-	return redacted
 }
 
 func printEventJSON(out io.Writer, event model.RunEvent) error {
@@ -212,13 +169,13 @@ func renderWorkflowStarted(event model.RunEvent) string {
 	if event.Total > 0 {
 		return fmt.Sprintf(
 			"🧌 Goblin crew enters %q from project %q. %d top-level %s packed.",
-			event.Workflow,
-			event.Project,
+			event.WorkflowName,
+			event.ProjectName,
 			event.Total,
 			pluralize(event.Total, "trick", "tricks"),
 		)
 	}
-	return fmt.Sprintf("🧌 Goblin crew enters %q from project %q.", event.Workflow, event.Project)
+	return fmt.Sprintf("🧌 Goblin crew enters %q from project %q.", event.WorkflowName, event.ProjectName)
 }
 
 func renderStepStarted(event model.RunEvent) string {
@@ -253,18 +210,18 @@ func renderStepFinished(event model.RunEvent, verbosity int) string {
 func renderWorkflowFinished(event model.RunEvent) string {
 	duration := formatDuration(time.Duration(event.DurationMS) * time.Millisecond)
 	if event.Error != "" {
-		return fmt.Sprintf("🧌 Goblin raid on %q blew up after %s. Trouble: %s", event.Workflow, duration, event.Error)
+		return fmt.Sprintf("🧌 Goblin raid on %q blew up after %s. Trouble: %s", event.WorkflowName, duration, event.Error)
 	}
 	if event.Total > 0 {
 		return fmt.Sprintf(
 			"🧌 Goblin crew hauled %q out of the cave in %s after %d top-level %s.",
-			event.Workflow,
+			event.WorkflowName,
 			duration,
 			event.Total,
 			pluralize(event.Total, "step", "steps"),
 		)
 	}
-	return fmt.Sprintf("🧌 Goblin crew hauled %q out of the cave in %s.", event.Workflow, duration)
+	return fmt.Sprintf("🧌 Goblin crew hauled %q out of the cave in %s.", event.WorkflowName, duration)
 }
 
 func pluralize(count int, singular, plural string) string {

@@ -74,6 +74,11 @@ func (b *Block) Execute(
 	config := decodeConfig(step)
 	startedAt := time.Now()
 
+	signer, err := newSigner(config.Signing)
+	if err != nil {
+		return nil, fmt.Errorf("auth config: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, config.Method, config.URL, bodyReader(config.Body))
 	if err != nil {
 		return nil, fmt.Errorf("build http request: %w", err)
@@ -84,6 +89,17 @@ func (b *Block) Execute(
 	}
 	if config.Body != "" && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+
+	if signer != nil {
+		newBody, signErr := signer.Sign(req, []byte(config.Body))
+		if signErr != nil {
+			return nil, fmt.Errorf("sign request: %w", signErr)
+		}
+		if config.Signing.BodyField != "" {
+			config.Body = string(newBody)
+			req.Body = io.NopCloser(strings.NewReader(config.Body))
+		}
 	}
 
 	// #nosec G704 -- Workflow HTTP requests intentionally target user-configured endpoints.

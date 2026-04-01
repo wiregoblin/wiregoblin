@@ -147,7 +147,6 @@ func (r *Runner) bindRunContextExecutors(
 		}
 		runResult := &block.WorkflowRunResult{
 			WorkflowID:      target.ID,
-			Workflow:        target.Name,
 			Steps:           toNestedStepResults(results),
 			Variables:       redact.Strings(cloneStringMap(childCtx.Variables), secretValues),
 			SecretVariables: redact.Strings(cloneStringMap(childCtx.SecretVariables), secretValues),
@@ -395,7 +394,7 @@ func (r *Runner) executeStep(
 	}
 
 	if result != nil {
-		runCtx.StepResults[step.Name] = result.Output
+		runCtx.StepResults[step.ID] = result.Output
 		if applyAssignments {
 			if err := applyResponseExtractions(runCtx, resolved, result); err != nil {
 				return result, resolved, "", err
@@ -1027,7 +1026,7 @@ func runErrorChain(
 			return err
 		}
 
-		runCtx.StepResults["onError:"+step.Name] = result.Output
+		runCtx.StepResults["onError:"+step.ID] = result.Output
 		if err := applyResponseExtractions(runCtx, resolved, result); err != nil {
 			*results = append(*results, newStepResult(index, step, "error-handler-failed", nil, redactError(runCtx, err)))
 			return err

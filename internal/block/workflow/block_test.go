@@ -28,7 +28,6 @@ func TestExecuteRunsNestedWorkflowFromRunContext(t *testing.T) {
 			}
 			return &block.WorkflowRunResult{
 				WorkflowID:      "wf-1",
-				Workflow:        "Child Workflow",
 				Variables:       map[string]string{"ResultID": "done"},
 				SecretVariables: map[string]string{"SecretID": "[REDACTED]"},
 				Exports:         map[string]string{"ResultID": "done"},
@@ -42,9 +41,6 @@ func TestExecuteRunsNestedWorkflowFromRunContext(t *testing.T) {
 	output := result.Output.(map[string]any)
 	if output["target_workflow_id"] != "child-workflow" {
 		t.Fatalf("target_workflow_id = %v, want %q", output["target_workflow_id"], "child-workflow")
-	}
-	if output["workflow"] != "Child Workflow" {
-		t.Fatalf("workflow = %v, want %q", output["workflow"], "Child Workflow")
 	}
 	secretVariables, ok := output["secret_variables"].(map[string]string)
 	if !ok || secretVariables["SecretID"] != "[REDACTED]" {

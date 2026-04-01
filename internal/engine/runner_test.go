@@ -1371,8 +1371,8 @@ func TestRunWithWorkflowsWithoutDeclaredOutputsExportsNothing(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected nested output map, got %#v", results[0].Output)
 	}
-	if got := nestedOutput["workflow"]; got != "child" {
-		t.Fatalf("workflow = %v, want %q", got, "child")
+	if got := nestedOutput["workflow_id"]; got != workflowID("child") {
+		t.Fatalf("workflow_id = %v, want %q", got, workflowID("child"))
 	}
 	outputs, ok := nestedOutput["outputs"].(map[string]string)
 	if !ok {

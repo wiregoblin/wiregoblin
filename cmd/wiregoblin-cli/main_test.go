@@ -12,6 +12,8 @@ import (
 	"github.com/wiregoblin/wiregoblin/internal/model"
 )
 
+func ptrStr(s string) *string { return &s }
+
 func TestResolveProjectPathFromDir_ExplicitPath(t *testing.T) {
 	t.Parallel()
 
@@ -95,7 +97,7 @@ workflows:
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	execErr := run(configPath, "alpha", 0, true, &stdout, &stderr)
+	execErr := run(configPath, ptrStr("alpha"), 0, true, &stdout, &stderr)
 	if execErr != nil {
 		t.Fatalf("run returned error: %v", execErr)
 	}
@@ -145,7 +147,7 @@ workflows:
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	execErr := run(configPath, "alpha", 0, false, &stdout, &stderr)
+	execErr := run(configPath, ptrStr("alpha"), 0, false, &stdout, &stderr)
 	if execErr != nil {
 		t.Fatalf("run returned error: %v", execErr)
 	}
@@ -188,7 +190,7 @@ workflows:
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	execErr := run(configPath, "alpha", 3, false, &stdout, &stderr)
+	execErr := run(configPath, ptrStr("alpha"), 3, false, &stdout, &stderr)
 	if execErr != nil {
 		t.Fatalf("run returned error: %v", execErr)
 	}
@@ -236,7 +238,7 @@ workflows:
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	execErr := run(configPath, "parent", 0, false, &stdout, &stderr)
+	execErr := run(configPath, ptrStr("parent"), 0, false, &stdout, &stderr)
 	if execErr != nil {
 		t.Fatalf("run returned error: %v", execErr)
 	}
@@ -276,7 +278,7 @@ workflows:
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	execErr := run(configPath, "", 0, true, &stdout, &stderr)
+	execErr := run(configPath, ptrStr(""), 0, true, &stdout, &stderr)
 	if execErr == nil {
 		t.Fatal("run returned nil error, want error")
 	}

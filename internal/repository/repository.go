@@ -9,5 +9,8 @@ import (
 
 // ProjectRepository returns project definitions for the current application context.
 type ProjectRepository interface {
-	GetProject(ctx context.Context) (*model.Definition, error)
+	ProjectID(ctx context.Context) (string, error)
+	GetProject(ctx context.Context, projectID string) (*model.Definition, error)
+	GetWorkflow(ctx context.Context, projectID string, workflowID string) (*model.Workflow, error)
+	ListWorkflows(ctx context.Context, projectID string) ([]string, error)
 }

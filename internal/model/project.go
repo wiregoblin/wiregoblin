@@ -39,6 +39,7 @@ type Workflow struct {
 	Constants       []Entry
 	Outputs         map[string]string
 	Variables       []Entry
+	Secrets         []Entry
 	SecretVariables []Entry
 	Steps           []Step
 	OnErrorSteps    []Step

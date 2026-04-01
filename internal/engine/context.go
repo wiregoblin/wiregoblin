@@ -53,6 +53,11 @@ func NewRunContext(project *model.Project, definition *model.Workflow) *block.Ru
 				runCtx.Constants[entry.Key] = entry.Value
 			}
 		}
+		for _, entry := range definition.Secrets {
+			if entry.Key != "" {
+				runCtx.Secrets[entry.Key] = entry.Value
+			}
+		}
 		for _, entry := range definition.Variables {
 			if entry.Key != "" {
 				runCtx.Variables[entry.Key] = entry.Value

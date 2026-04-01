@@ -66,7 +66,6 @@ type WorkflowStepResult struct {
 // WorkflowRunResult describes the outcome of a nested workflow execution.
 type WorkflowRunResult struct {
 	WorkflowID      string               `json:"workflow_id"`
-	Workflow        string               `json:"workflow"`
 	Steps           []WorkflowStepResult `json:"steps,omitempty"`
 	Variables       map[string]string    `json:"variables,omitempty"`
 	SecretVariables map[string]string    `json:"secret_variables,omitempty"`

@@ -16,8 +16,8 @@ func TestEmitWorkflowFinishedRedactsSecrets(t *testing.T) {
 
 	service.emitWorkflowFinished(
 		events,
-		"Demo",
-		"Alpha",
+		"demo-id", "Demo",
+		"alpha-id", "Alpha",
 		1,
 		time.Now(),
 		errors.New("token secret-123 leaked"),

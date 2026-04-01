@@ -67,7 +67,6 @@ func (b *Block) Execute(ctx context.Context, runCtx *block.RunContext, step mode
 		result.Output = map[string]any{
 			"target_workflow_id": config.TargetWorkflowID,
 			"workflow_id":        nested.WorkflowID,
-			"workflow":           nested.Workflow,
 			"inputs":             config.Inputs,
 			"steps":              nested.Steps,
 			"variables":          nested.Variables,

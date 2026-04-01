@@ -67,12 +67,10 @@ func runCmd(args []string) {
 	}
 
 	positional := fs.Args()
-	if len(positional) != 1 {
-		fmt.Fprintf(os.Stderr, "run expects exactly one <workflow_id>\n\n%s", runUsageText)
+	if len(positional) > 1 {
+		fmt.Fprintf(os.Stderr, "run expects at most one <workflow_id>\n\n%s", runUsageText)
 		os.Exit(1)
 	}
-
-	workflowName := positional[0]
 
 	resolved, err := resolveProjectPath(projectPath)
 	if err != nil {
@@ -80,17 +78,22 @@ func runCmd(args []string) {
 		os.Exit(1)
 	}
 
-	if err := run(resolved, workflowName, verbosity, jsonOutput, os.Stdout, os.Stderr); err != nil {
+	var workflowID *string
+	if len(positional) == 1 {
+		workflowID = &positional[0]
+	}
+
+	if err := run(resolved, workflowID, verbosity, jsonOutput, os.Stdout, os.Stderr); err != nil {
 		os.Exit(1)
 	}
 }
 
-func run(projectPath, workflowName string, verbosity int, jsonOutput bool, stdout, stderr io.Writer) error {
+func run(projectPath string, workflowID *string, verbosity int, jsonOutput bool, stdout, stderr io.Writer) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	app := cliapp.New(projectPath)
-	return app.ExecuteWorkflow(ctx, workflowName, cliapp.ExecuteOptions{
+	return app.Run(ctx, workflowID, cliapp.ExecuteOptions{
 		RunOptions: workflowservice.RunOptions{Context: ctx},
 		Verbosity:  verbosity,
 		JSONOutput: jsonOutput,
@@ -132,21 +135,23 @@ func resolveProjectPathFromDir(projectPath, workingDir string) (string, error) {
 const usageText = `WireGoblin workflow runner
 
 Usage:
-  wiregoblin-cli run [flags] <workflow>
+  wiregoblin-cli run [flags] [workflow]
 
 Examples:
+  wiregoblin-cli run                              # run all workflows in project order
   wiregoblin-cli run http_example
+  wiregoblin-cli run -p config/myproject.yaml     # run all workflows from a specific config
   wiregoblin-cli run -p config/myproject.yaml http_example
   wiregoblin-cli run -v -p config/myproject.yaml http_example
-  wiregoblin-cli run -vv -p config/myproject.yaml http_example
-  wiregoblin-cli run -vvv -p config/myproject.yaml http_example
   wiregoblin-cli run --json -p config/myproject.yaml http_example
 `
 
-const runUsageText = `Run a workflow from a project config
+const runUsageText = `Run a workflow (or all workflows) from a project config
 
 Usage:
-  wiregoblin-cli run [flags] <workflow_id>
+  wiregoblin-cli run [flags] [workflow_id]
+
+If workflow_id is omitted, all workflows are run sequentially in alphabetical order.
 
 Flags:
   -p, --project  Path to the project YAML config file
