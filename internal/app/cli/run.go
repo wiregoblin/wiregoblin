@@ -87,8 +87,10 @@ func streamWorkflow(
 			if err := printEventJSON(stdout, event); err != nil {
 				return err
 			}
+			flushWriter(stdout)
 		} else {
 			text.PrintEvent(event)
+			flushWriter(stderr)
 		}
 
 		if event.Type == model.EventWorkflowFinished && event.Error != "" {
@@ -198,6 +200,9 @@ func renderWorkflowStarted(event model.RunEvent) string {
 }
 
 func renderStepStarted(event model.RunEvent) string {
+	if event.Index == 0 || event.Total == 0 {
+		return fmt.Sprintf("[-] Goblin pokes %q [%s]", event.Step, event.StepType)
+	}
 	return fmt.Sprintf("[%d/%d] Goblin pokes %q [%s]", event.Index, event.Total, event.Step, event.StepType)
 }
 
@@ -402,4 +407,19 @@ func summarizeValue(value any) string {
 		return text
 	}
 	return text[:maxLen-3] + "..."
+}
+
+func flushWriter(writer io.Writer) {
+	type flushError interface {
+		Flush() error
+	}
+	type flushNoError interface {
+		Flush()
+	}
+	switch typed := writer.(type) {
+	case flushError:
+		_ = typed.Flush()
+	case flushNoError:
+		typed.Flush()
+	}
 }

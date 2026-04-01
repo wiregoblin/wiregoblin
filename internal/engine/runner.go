@@ -172,6 +172,12 @@ func (r *Runner) bindRunContextExecutors(
 		result, _, _, err := r.executeStep(ctx, isolated, step, true, false)
 		return result, err
 	}
+	runCtx.EmitStepStart = func(event model.StepStartEvent) {
+		r.observer.OnStepStart(event)
+	}
+	runCtx.EmitStepFinish = func(event model.StepFinishEvent) {
+		r.observer.OnStepFinish(event)
+	}
 }
 
 func withWorkflowTimeout(ctx context.Context, definition *model.Workflow) (context.Context, context.CancelFunc) {
@@ -391,7 +397,7 @@ func (r *Runner) executeStep(
 
 	result, err := blk.Execute(ctx, runCtx, resolved)
 	if result != nil && result.Request != nil {
-		resolved.Config = result.Request
+		resolved.Config = mergeConfigForLogging(resolved.Config, result.Request)
 	}
 	if err != nil {
 		return result, resolved, "", err
@@ -410,6 +416,26 @@ func (r *Runner) executeStep(
 	}
 
 	return result, resolved, stepStatusOK, nil
+}
+
+func mergeConfigForLogging(original map[string]any, request map[string]any) map[string]any {
+	if len(original) == 0 {
+		return request
+	}
+	merged := make(map[string]any, len(original)+len(request))
+	for key, value := range original {
+		merged[key] = value
+	}
+	for key, value := range request {
+		if existing, ok := merged[key].(map[string]any); ok {
+			if override, ok := value.(map[string]any); ok {
+				merged[key] = mergeConfigForLogging(existing, override)
+				continue
+			}
+		}
+		merged[key] = value
+	}
+	return merged
 }
 
 func findWorkflowDefinition(workflows map[string]*model.Workflow, target string) (*model.Workflow, error) {

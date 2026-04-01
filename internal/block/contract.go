@@ -38,6 +38,8 @@ type RunContext struct {
 		runCtx *RunContext,
 		step model.Step,
 	) (*Result, error)
+	EmitStepStart  func(event model.StepStartEvent)
+	EmitStepFinish func(event model.StepFinishEvent)
 }
 
 // Jump instructs the runner to continue execution from a target step.

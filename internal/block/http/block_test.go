@@ -62,6 +62,22 @@ func TestExecuteSuccess(t *testing.T) {
 	if got, ok := output["responseTimeMs"].(int64); !ok || got < 0 {
 		t.Fatalf("responseTimeMs = %#v, want non-negative int64", output["responseTimeMs"])
 	}
+	if result.Request["method"] != stdhttp.MethodPost {
+		t.Fatalf("request.method = %#v, want POST", result.Request["method"])
+	}
+	if result.Request["url"] != server.URL {
+		t.Fatalf("request.url = %#v, want %q", result.Request["url"], server.URL)
+	}
+	headers := result.Request["headers"].(map[string]any)
+	if headers["X-Test"] != "value" {
+		t.Fatalf("request.headers[X-Test] = %#v, want value", headers["X-Test"])
+	}
+	if headers["Content-Type"] != "application/json" {
+		t.Fatalf("request.headers[Content-Type] = %#v, want application/json", headers["Content-Type"])
+	}
+	if result.Request["body"] != `{"hello":"world"}` {
+		t.Fatalf("request.body = %#v, want body", result.Request["body"])
+	}
 	body := output["body"].(map[string]any)
 	if body["ok"] != true {
 		t.Fatalf("body.ok = %v, want true", body["ok"])

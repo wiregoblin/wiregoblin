@@ -122,6 +122,14 @@ func (b *Block) Execute(
 		"responseTimeMs": responseTimeMS,
 		"body":           decodeResponseBody(body),
 	}
+	request := map[string]any{
+		"method":  config.Method,
+		"url":     config.URL,
+		"headers": cloneHeaders(req.Header),
+	}
+	if config.Body != "" {
+		request["body"] = config.Body
+	}
 	exports := map[string]string{
 		"statusCode":     strconv.Itoa(resp.StatusCode),
 		"statusText":     resp.Status,
@@ -130,10 +138,10 @@ func (b *Block) Execute(
 	}
 
 	if resp.StatusCode >= 400 {
-		return &block.Result{Output: output, Exports: exports}, fmt.Errorf("http %s", resp.Status)
+		return &block.Result{Output: output, Exports: exports, Request: request}, fmt.Errorf("http %s", resp.Status)
 	}
 
-	return &block.Result{Output: output, Exports: exports}, nil
+	return &block.Result{Output: output, Exports: exports, Request: request}, nil
 }
 
 func bodyReader(body string) io.Reader {
@@ -158,6 +166,25 @@ func decodeResponseBody(body string) any {
 		return decoded
 	}
 	return body
+}
+
+func cloneHeaders(headers http.Header) map[string]any {
+	if len(headers) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(headers))
+	for key, values := range headers {
+		if len(values) == 1 {
+			out[key] = values[0]
+			continue
+		}
+		items := make([]any, len(values))
+		for i, value := range values {
+			items[i] = value
+		}
+		out[key] = items
+	}
+	return out
 }
 
 func clientForConfig(base *http.Client, config httpConfig) *http.Client {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wiregoblin/wiregoblin/internal/block"
 	"github.com/wiregoblin/wiregoblin/internal/condition"
@@ -76,8 +77,38 @@ func (b *Block) Execute(ctx context.Context, runCtx *block.RunContext, step mode
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
 		lastAttempt = attempt
 		setAttemptBuiltins(runCtx, attempt, config.MaxAttempts)
-		lastRequest = resolveRetryRequest(step.Config, runCtx)
+		attemptRequest := resolveRetryRequest(step.Config, runCtx)
+		attemptStep := retryAttemptStep(config.Block, attempt, config.MaxAttempts)
+		if runCtx.EmitStepStart != nil {
+			runCtx.EmitStepStart(model.StepStartEvent{
+				Step: attemptStep,
+			})
+		}
+		attemptStartedAt := time.Now()
 		result, execErr := runCtx.ExecuteStep(ctx, config.Block)
+		actualRequest := attemptRequest
+		eventRequest := attemptRequest
+		if result != nil && result.Request != nil {
+			actualRequest = map[string]any{
+				"block": result.Request,
+			}
+			eventRequest = result.Request
+		}
+		if runCtx.EmitStepFinish != nil {
+			status := "ok"
+			if execErr != nil {
+				status = "failed"
+			}
+			runCtx.EmitStepFinish(model.StepFinishEvent{
+				Step:     attemptStep,
+				Status:   status,
+				Duration: time.Since(attemptStartedAt),
+				Request:  eventRequest,
+				Response: outputOrNil(result),
+				Error:    execErr,
+			})
+		}
+		lastRequest = actualRequest
 		lastResult = result
 		lastErr = execErr
 		retryable := shouldRetry(config.RetryOn, result, execErr)
@@ -88,7 +119,7 @@ func (b *Block) Execute(ctx context.Context, runCtx *block.RunContext, step mode
 		}
 		history = append(history, map[string]any{
 			"attempt":       attempt,
-			"request":       lastRequest,
+			"request":       actualRequest,
 			"result":        outputOrNil(result),
 			"error":         errorString(execErr),
 			"retryable":     retryable,
@@ -436,6 +467,15 @@ func waitForRetry(ctx context.Context, baseDelayMS, attempt int) error {
 
 func resolveRetryRequest(config map[string]any, runCtx *block.RunContext) map[string]any {
 	return resolveRetryRequestMap(config, runCtx)
+}
+
+func retryAttemptStep(step model.Step, attempt, maxAttempts int) model.Step {
+	attemptStep := step
+	attemptStep.Name = fmt.Sprintf("%s (attempt %d/%d)", step.Name, attempt, maxAttempts)
+	if attemptStep.Name == "" {
+		attemptStep.Name = fmt.Sprintf("retry attempt %d/%d", attempt, maxAttempts)
+	}
+	return attemptStep
 }
 
 func resolveRetryRequestMap(config map[string]any, runCtx *block.RunContext) map[string]any {

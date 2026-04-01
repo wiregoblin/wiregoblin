@@ -829,13 +829,19 @@ func TestRunRetryReportsResolvedNestedBlockRequestToObserver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected successful run, got %v", err)
 	}
-	if len(observer.calls) != 1 || observer.calls[0].finish == nil {
-		t.Fatalf("expected one finish event, got %#v", observer.calls)
+	var retryFinish *model.StepFinishEvent
+	for i := range observer.calls {
+		if observer.calls[i].finish != nil && observer.calls[i].finish.Step.Type == "retry" {
+			retryFinish = observer.calls[i].finish
+		}
+	}
+	if retryFinish == nil {
+		t.Fatalf("expected retry finish event, got %#v", observer.calls)
 	}
 
-	nestedRequest, ok := observer.calls[0].finish.Request["block"].(map[string]any)
+	nestedRequest, ok := retryFinish.Request["block"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected nested block request, got %#v", observer.calls[0].finish.Request["block"])
+		t.Fatalf("expected nested block request, got %#v", retryFinish.Request["block"])
 	}
 	if got := nestedRequest["url"]; got != "https://example.com/users/42" {
 		t.Fatalf("url = %v, want resolved url", got)
@@ -849,6 +855,61 @@ func TestRunRetryReportsResolvedNestedBlockRequestToObserver(t *testing.T) {
 	}
 	if got := nestedRequest["body"]; got != `{"attempt":"1","user":"42","host":"https://example.com"}` {
 		t.Fatalf("body = %v, want resolved body", got)
+	}
+}
+
+func TestRunPreservesAssignWhenBlockReturnsActualRequestForLogging(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&fakeBlock{
+		typ:             "fake",
+		responseMapping: true,
+		execute: func(_ context.Context, _ *block.RunContext, _ model.Step) (*block.Result, error) {
+			return &block.Result{
+				Output:  map[string]any{"body": map[string]any{"id": "42"}},
+				Request: map[string]any{"url": "https://example.com/users/42"},
+				Exports: map[string]string{},
+			}, nil
+		},
+	})
+	registry.Register(&fakeBlock{
+		typ: "consumer",
+		referencePolicy: []block.ReferencePolicy{
+			{Field: "value", Variables: true, InlineOnly: true},
+		},
+	})
+
+	runner := New(registry, nopObserver{})
+	results, err := runner.Run(context.Background(), nil, &model.Workflow{
+		Name: "test",
+		Steps: []model.Step{
+			{
+				Name:    "producer",
+				Type:    "fake",
+				Enabled: true,
+				Config: map[string]any{
+					"url": "https://example.com/users/$user_id",
+					"assign": map[string]any{
+						"$user_id": "body.id",
+					},
+				},
+			},
+			{
+				Name:    "consumer",
+				Type:    "consumer",
+				Enabled: true,
+				Config: map[string]any{
+					"value": "$user_id",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected successful run, got %v", err)
+	}
+
+	output := results[1].Output.(map[string]any)
+	if got := output["value"]; got != "42" {
+		t.Fatalf("value = %v, want 42", got)
 	}
 }
 

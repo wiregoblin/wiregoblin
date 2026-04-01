@@ -18,11 +18,11 @@ func (b *Block) Execute(
 	step model.Step,
 ) (*block.Result, error) {
 	config := decodeConfig(step)
-	request, err := resolveRequest(config.Request, runCtx)
+	requestBody, err := resolveRequest(config.Request, runCtx)
 	if err != nil {
 		return nil, err
 	}
-	config.Request = request
+	config.Request = requestBody
 	startedAt := time.Now()
 
 	response, err := b.Invoke(ctx, config)
@@ -30,6 +30,13 @@ func (b *Block) Execute(
 		return nil, err
 	}
 	responseTimeMS := time.Since(startedAt).Milliseconds()
+	request := map[string]any{
+		"address":  config.Address,
+		"tls":      config.TLS,
+		"method":   config.Method,
+		"request":  config.Request,
+		"metadata": config.Metadata,
+	}
 
 	var output any
 	if err := json.Unmarshal([]byte(response), &output); err != nil {
@@ -42,6 +49,7 @@ func (b *Block) Execute(
 				"body":           response,
 				"responseTimeMs": fmt.Sprintf("%d", responseTimeMS),
 			},
+			Request: request,
 		}, nil
 	}
 
@@ -53,6 +61,7 @@ func (b *Block) Execute(
 		Exports: map[string]string{
 			"responseTimeMs": fmt.Sprintf("%d", responseTimeMS),
 		},
+		Request: request,
 	}, nil
 }
 

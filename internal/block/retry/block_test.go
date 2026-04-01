@@ -394,6 +394,56 @@ func TestExecuteFailsWhenRetryBudgetIsExhaustedWithoutNestedError(t *testing.T) 
 	}
 }
 
+func TestExecuteEmitsAttemptProgressEvents(t *testing.T) {
+	started := make([]string, 0)
+	finished := make([]model.StepFinishEvent, 0)
+	runCtx := &block.RunContext{
+		Builtins: map[string]string{},
+		ExecuteStep: func(_ context.Context, _ model.Step) (*block.Result, error) {
+			return &block.Result{
+				Output:  map[string]any{"status": "ok"},
+				Request: map[string]any{"url": "https://example.com/final"},
+			}, nil
+		},
+		EmitStepStart: func(event model.StepStartEvent) {
+			started = append(started, event.Step.Name)
+		},
+		EmitStepFinish: func(event model.StepFinishEvent) {
+			finished = append(finished, event)
+		},
+	}
+
+	_, err := New().Execute(context.Background(), runCtx, model.Step{
+		Name: "retry-http",
+		Config: map[string]any{
+			"max_attempts": 1,
+			"block": map[string]any{
+				"name": "Nested HTTP",
+				"type": "http",
+				"url":  "https://example.com/$user_id",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(started) != 1 || started[0] != "Nested HTTP (attempt 1/1)" {
+		t.Fatalf("started = %#v, want nested retry attempt name", started)
+	}
+	if len(finished) != 1 {
+		t.Fatalf("len(finished) = %d, want 1", len(finished))
+	}
+	if finished[0].Status != "ok" {
+		t.Fatalf("finish status = %q, want ok", finished[0].Status)
+	}
+	if finished[0].Duration < 0 {
+		t.Fatalf("finish duration = %v, want >= 0", finished[0].Duration)
+	}
+	if finished[0].Request["url"] != "https://example.com/final" {
+		t.Fatalf("finish request url = %#v, want final url", finished[0].Request["url"])
+	}
+}
+
 func TestExecuteRetriesWhenAllRulesMatch(t *testing.T) {
 	attempts := 0
 	runCtx := &block.RunContext{
