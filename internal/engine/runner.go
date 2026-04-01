@@ -390,6 +390,9 @@ func (r *Runner) executeStep(
 	}
 
 	result, err := blk.Execute(ctx, runCtx, resolved)
+	if result != nil && result.Request != nil {
+		resolved.Config = result.Request
+	}
 	if err != nil {
 		return result, resolved, "", err
 	}

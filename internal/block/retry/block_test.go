@@ -134,6 +134,23 @@ func TestExecuteRetriesConfiguredStatusCode(t *testing.T) {
 	if got := result.Output.(map[string]any)["attempts"]; got != 3 {
 		t.Fatalf("attempts output = %v, want 3", got)
 	}
+
+	history, ok := result.Output.(map[string]any)["history"].([]map[string]any)
+	if !ok {
+		t.Fatalf("history = %#v, want []map[string]any", result.Output.(map[string]any)["history"])
+	}
+	if len(history) != 3 {
+		t.Fatalf("len(history) = %d, want 3", len(history))
+	}
+	if got := history[0]["attempt"]; got != 1 {
+		t.Fatalf("history[0].attempt = %v, want 1", got)
+	}
+	if got := history[0]["retryable"]; got != true {
+		t.Fatalf("history[0].retryable = %v, want true", got)
+	}
+	if got := history[2]["retryable"]; got != false {
+		t.Fatalf("history[2].retryable = %v, want false", got)
+	}
 }
 
 func TestExecuteStopsEarlyOnNonMatchingStatusCode(t *testing.T) {
@@ -323,6 +340,57 @@ func TestExecuteRetriesPathRuleForArrayLength(t *testing.T) {
 	}
 	if attempts != 3 {
 		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestExecuteFailsWhenRetryBudgetIsExhaustedWithoutNestedError(t *testing.T) {
+	attempts := 0
+	runCtx := &block.RunContext{
+		Builtins: map[string]string{},
+		ExecuteStep: func(_ context.Context, _ model.Step) (*block.Result, error) {
+			attempts++
+			return &block.Result{
+				Output: map[string]any{
+					"body": map[string]any{
+						"data": "",
+					},
+				},
+			}, nil
+		},
+	}
+
+	result, err := New().Execute(context.Background(), runCtx, model.Step{
+		Name: "retry-grpc",
+		Config: map[string]any{
+			"max_attempts": 3,
+			"retry_on": map[string]any{
+				"match": "any",
+				"rules": []any{
+					map[string]any{
+						"type":     "path",
+						"path":     "body.data",
+						"operator": "empty",
+					},
+				},
+			},
+			"block": map[string]any{
+				"type": "grpc",
+			},
+		},
+	})
+	if err == nil || err.Error() != "retry exhausted after 3 attempts" {
+		t.Fatalf("error = %v, want retry exhausted after 3 attempts", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+
+	output := result.Output.(map[string]any)
+	if got := output["succeeded"]; got != false {
+		t.Fatalf("succeeded = %v, want false", got)
+	}
+	if got := output["last_error"]; got != "retry exhausted after 3 attempts" {
+		t.Fatalf("last_error = %v, want retry exhausted after 3 attempts", got)
 	}
 }
 

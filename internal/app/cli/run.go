@@ -149,7 +149,7 @@ func (r *textRenderer) printStepFinished(event model.RunEvent) {
 		}
 	}
 
-	if event.Status == "ok" && r.verbosity == 0 {
+	if event.Status == "ok" && r.verbosity == 0 && !shouldRenderRetrySummary(event) {
 		return
 	}
 	if event.Status == "skipped" && r.verbosity == 0 {
@@ -161,6 +161,11 @@ func (r *textRenderer) printStepFinished(event model.RunEvent) {
 	if r.verbosity == 2 {
 		if summary := summarizeValue(event.Response); summary != "" {
 			r.println(r.activeWorkflowRun, fmt.Sprintf("   🧪 Goblin loot: %s", summary))
+		}
+	}
+	if r.verbosity >= 1 {
+		for _, line := range renderRetryHistory(event) {
+			r.println(r.activeWorkflowRun, line)
 		}
 	}
 	if r.verbosity >= 3 {
@@ -198,19 +203,108 @@ func renderStepStarted(event model.RunEvent) string {
 
 func renderStepFinished(event model.RunEvent, verbosity int) string {
 	duration := formatDuration(time.Duration(event.DurationMS) * time.Millisecond)
+	attempts := retryAttemptCount(event)
 
 	switch event.Status {
 	case "skipped":
 		return "   😴 Goblin nap: skipped."
 	case "failed":
+		if attempts > 1 {
+			return fmt.Sprintf("   💥 Goblin trap: failed in %s after %d attempts | trouble=%s", duration, attempts, event.Error)
+		}
 		return fmt.Sprintf("   💥 Goblin trap: failed in %s | trouble=%s", duration, event.Error)
 	default:
 		if verbosity >= 2 {
 			if vars := assignedVars(event.Request); len(vars) > 0 {
+				if attempts > 1 {
+					return fmt.Sprintf(
+						"   ✅ Goblin loot secured in %s after %d attempts → %s",
+						duration,
+						attempts,
+						strings.Join(vars, ", "),
+					)
+				}
 				return fmt.Sprintf("   ✅ Goblin loot secured in %s → %s", duration, strings.Join(vars, ", "))
 			}
 		}
+		if attempts > 1 {
+			return fmt.Sprintf("   ✅ Goblin loot secured in %s after %d attempts", duration, attempts)
+		}
 		return fmt.Sprintf("   ✅ Goblin loot secured in %s", duration)
+	}
+}
+
+func shouldRenderRetrySummary(event model.RunEvent) bool {
+	return retryAttemptCount(event) > 1
+}
+
+func retryAttemptCount(event model.RunEvent) int {
+	response, ok := event.Response.(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch typed := response["attempts"].(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
+func renderRetryHistory(event model.RunEvent) []string {
+	if event.StepType != "retry" {
+		return nil
+	}
+	response, ok := event.Response.(map[string]any)
+	if !ok {
+		return nil
+	}
+	items, ok := response["history"].([]any)
+	if !ok || len(items) <= 1 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		attempt := retryHistoryInt(entry["attempt"])
+		retryable, _ := entry["retryable"].(bool)
+		nextDelay := retryHistoryInt(entry["next_delay_ms"])
+		errText, _ := entry["error"].(string)
+
+		switch {
+		case errText == "" && !retryable:
+			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d succeeded.", attempt))
+		case retryable && nextDelay > 0:
+			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d failed: %s | next delay %dms", attempt, errText, nextDelay))
+		case retryable:
+			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d failed: %s", attempt, errText))
+		case errText != "":
+			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d stopped retrying: %s", attempt, errText))
+		default:
+			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d stopped retrying.", attempt))
+		}
+	}
+	return lines
+}
+
+func retryHistoryInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
 	}
 }
 

@@ -730,6 +730,128 @@ func TestRunRetryExecutesNestedBlockWithResolvedBuiltins(t *testing.T) {
 	}
 }
 
+func TestRunRetryResolvesVariableConstantAndBuiltinInsideNestedBlock(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(retryblock.New())
+	registry.Register(&fakeBlock{
+		typ: "fake",
+		referencePolicy: []block.ReferencePolicy{
+			{Field: "url", Constants: true, Variables: true, InlineOnly: true},
+			{Field: "headers", Constants: true, Variables: true, InlineOnly: true},
+			{Field: "body", Constants: true, Variables: true, InlineOnly: true},
+		},
+		execute: func(_ context.Context, _ *block.RunContext, step model.Step) (*block.Result, error) {
+			return &block.Result{Output: step.Config}, nil
+		},
+	})
+
+	runner := New(registry, nopObserver{})
+	results, err := runner.Run(context.Background(), &model.Project{
+		Constants: []model.Entry{{Key: "api_host", Value: "https://example.com"}},
+		Variables: []model.Entry{{Key: "user_id", Value: "42"}},
+	}, &model.Workflow{
+		ID:   "retry_workflow",
+		Name: "test",
+		Steps: []model.Step{{
+			Name:    "wait",
+			Type:    "retry",
+			Enabled: true,
+			Config: map[string]any{
+				"max_attempts": 1,
+				"block": map[string]any{
+					"type": "fake",
+					"url":  "@api_host/users/$user_id",
+					"headers": map[string]any{
+						"X-Workflow": "!WorkflowID",
+					},
+					"body": `{"attempt":"!Retry.Attempt","user":"$user_id","host":"@api_host"}`,
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("expected successful run, got %v", err)
+	}
+
+	retryOutput := results[0].Output.(map[string]any)
+	nestedOutput := retryOutput["result"].(map[string]any)
+	if got := nestedOutput["url"]; got != "https://example.com/users/42" {
+		t.Fatalf("url = %v, want resolved url", got)
+	}
+
+	headers := nestedOutput["headers"].(map[string]any)
+	if got := headers["X-Workflow"]; got != "retry_workflow" {
+		t.Fatalf("X-Workflow = %v, want retry_workflow", got)
+	}
+
+	if got := nestedOutput["body"]; got != `{"attempt":"1","user":"42","host":"https://example.com"}` {
+		t.Fatalf("body = %v, want resolved body", got)
+	}
+}
+
+func TestRunRetryReportsResolvedNestedBlockRequestToObserver(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(retryblock.New())
+	registry.Register(&fakeBlock{
+		typ: "fake",
+		referencePolicy: []block.ReferencePolicy{
+			{Field: "url", Constants: true, Variables: true, InlineOnly: true},
+			{Field: "headers", Constants: true, Variables: true, InlineOnly: true},
+			{Field: "body", Constants: true, Variables: true, InlineOnly: true},
+		},
+	})
+
+	observer := &captureObserver{}
+	runner := New(registry, observer)
+	_, err := runner.Run(context.Background(), &model.Project{
+		Constants: []model.Entry{{Key: "api_host", Value: "https://example.com"}},
+		Variables: []model.Entry{{Key: "user_id", Value: "42"}},
+	}, &model.Workflow{
+		ID:   "retry_workflow",
+		Name: "test",
+		Steps: []model.Step{{
+			Name:    "wait",
+			Type:    "retry",
+			Enabled: true,
+			Config: map[string]any{
+				"max_attempts": 1,
+				"block": map[string]any{
+					"type": "fake",
+					"url":  "@api_host/users/$user_id",
+					"headers": map[string]any{
+						"X-Workflow": "!WorkflowID",
+					},
+					"body": `{"attempt":"!Retry.Attempt","user":"$user_id","host":"@api_host"}`,
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("expected successful run, got %v", err)
+	}
+	if len(observer.calls) != 1 || observer.calls[0].finish == nil {
+		t.Fatalf("expected one finish event, got %#v", observer.calls)
+	}
+
+	nestedRequest, ok := observer.calls[0].finish.Request["block"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested block request, got %#v", observer.calls[0].finish.Request["block"])
+	}
+	if got := nestedRequest["url"]; got != "https://example.com/users/42" {
+		t.Fatalf("url = %v, want resolved url", got)
+	}
+	headers, ok := nestedRequest["headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected headers map, got %#v", nestedRequest["headers"])
+	}
+	if got := headers["X-Workflow"]; got != "retry_workflow" {
+		t.Fatalf("X-Workflow = %v, want retry_workflow", got)
+	}
+	if got := nestedRequest["body"]; got != `{"attempt":"1","user":"42","host":"https://example.com"}` {
+		t.Fatalf("body = %v, want resolved body", got)
+	}
+}
+
 func TestRunForeachResolvesItemBuiltinsInsideNestedBlock(t *testing.T) {
 	registry := NewRegistry()
 	registry.Register(foreachblock.New())

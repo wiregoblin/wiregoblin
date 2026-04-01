@@ -50,6 +50,7 @@ type Jump struct {
 type Result struct {
 	Output  any               `json:"output,omitempty"`
 	Exports map[string]string `json:"exports,omitempty"`
+	Request map[string]any    `json:"-"`
 	Jump    *Jump             `json:"-"`
 }
 

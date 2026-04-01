@@ -187,6 +187,8 @@ workflows:
       $status: "outputs.statusCode"
 ```
 
+`retry` succeeds only when the nested block stops matching `retry_on` before `max_attempts`. If the last attempt still matches the retry condition, the `retry` block fails with an exhaustion error.
+
 ### foreach
 ```yaml
 # array variant
@@ -403,6 +405,8 @@ workflows:
 | `!Retry.Attempt` | Current attempt number (1-based) |
 | `!Retry.MaxAttempts` | Configured max attempts |
 
+`retry` also records per-attempt history in its output for logs and JSON streaming. Each history item includes the resolved request, nested result, error text, retryability, and next delay.
+
 ## Rules to follow
 
 1. Every block must have a unique `id` within the workflow (snake_case).
@@ -414,6 +418,7 @@ workflows:
 7. When generating a full project, always include at least one assert per workflow.
 8. Output the final YAML as a code block.
 9. Use `${VAR:=default}` in `constants`, `secrets`, `variables`, and `secret_variables` whenever a sensible default exists so the config works out-of-the-box without every env var being set.
+10. When using `retry`, design `retry_on` so exhaustion should be treated as a real failure; the block does not silently pass after the last attempt.
 
 ## Task
 

@@ -27,6 +27,13 @@ func (b *Block) Type() model.BlockType {
 	return blockType
 }
 
+// ReferencePolicy describes which retry fields accept constants and runtime variables.
+func (b *Block) ReferencePolicy() []block.ReferencePolicy {
+	return []block.ReferencePolicy{
+		{Field: "block", Constants: true, Variables: true, InlineOnly: true},
+	}
+}
+
 // Validate checks the retry configuration.
 func (b *Block) Validate(step model.Step) error {
 	config, err := decodeConfig(step)
@@ -60,18 +67,33 @@ func (b *Block) Execute(ctx context.Context, runCtx *block.RunContext, step mode
 
 	var lastResult *block.Result
 	var lastErr error
+	var lastRequest map[string]any
 	var lastRetryable bool
 	var stoppedEarly bool
 	lastAttempt := 0
+	history := make([]map[string]any, 0, config.MaxAttempts)
 
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
 		lastAttempt = attempt
 		setAttemptBuiltins(runCtx, attempt, config.MaxAttempts)
+		lastRequest = resolveRetryRequest(step.Config, runCtx)
 		result, execErr := runCtx.ExecuteStep(ctx, config.Block)
 		lastResult = result
 		lastErr = execErr
 		retryable := shouldRetry(config.RetryOn, result, execErr)
 		lastRetryable = retryable
+		nextDelay := 0
+		if retryable && attempt < config.MaxAttempts {
+			nextDelay = nextDelayMS(config.DelayMS, attempt)
+		}
+		history = append(history, map[string]any{
+			"attempt":       attempt,
+			"request":       lastRequest,
+			"result":        outputOrNil(result),
+			"error":         errorString(execErr),
+			"retryable":     retryable,
+			"next_delay_ms": nextDelay,
+		})
 		if !retryable {
 			if execErr == nil {
 				clearAttemptBuiltins(runCtx)
@@ -83,7 +105,9 @@ func (b *Block) Execute(ctx context.Context, runCtx *block.RunContext, step mode
 						"succeeded":    true,
 						"retryable":    false,
 						"result":       outputOrNil(result),
+						"history":      history,
 					},
+					Request: lastRequest,
 				}, nil
 			}
 			stoppedEarly = config.RetryOn.Enabled
@@ -105,12 +129,17 @@ func (b *Block) Execute(ctx context.Context, runCtx *block.RunContext, step mode
 					"stopped_early": stoppedEarly,
 					"result":        outputOrNil(lastResult),
 					"last_error":    execErr.Error(),
+					"history":       history,
 				},
+				Request: lastRequest,
 			}, err
 		}
 	}
 
 	clearAttemptBuiltins(runCtx)
+	if lastRetryable && lastErr == nil {
+		lastErr = fmt.Errorf("retry exhausted after %d attempts", lastAttempt)
+	}
 	return &block.Result{
 		Output: map[string]any{
 			"attempts":      lastAttempt,
@@ -121,7 +150,9 @@ func (b *Block) Execute(ctx context.Context, runCtx *block.RunContext, step mode
 			"stopped_early": stoppedEarly,
 			"result":        outputOrNil(lastResult),
 			"last_error":    errorString(lastErr),
+			"history":       history,
 		},
+		Request: lastRequest,
 	}, lastErr
 }
 
@@ -401,4 +432,46 @@ func clearAttemptBuiltins(runCtx *block.RunContext) {
 
 func waitForRetry(ctx context.Context, baseDelayMS, attempt int) error {
 	return waitForDelay(ctx, nextDelayMS(baseDelayMS, attempt))
+}
+
+func resolveRetryRequest(config map[string]any, runCtx *block.RunContext) map[string]any {
+	return resolveRetryRequestMap(config, runCtx)
+}
+
+func resolveRetryRequestMap(config map[string]any, runCtx *block.RunContext) map[string]any {
+	if config == nil {
+		return nil
+	}
+	resolved := make(map[string]any, len(config))
+	for key, value := range config {
+		if key == "assign" {
+			resolved[key] = value
+			continue
+		}
+		resolved[key] = resolveRetryRequestValue(value, runCtx)
+	}
+	return resolved
+}
+
+func resolveRetryRequestValue(value any, runCtx *block.RunContext) any {
+	policy := block.ReferencePolicy{
+		Constants:  true,
+		Variables:  true,
+		InlineOnly: true,
+	}
+
+	switch typed := value.(type) {
+	case string:
+		return block.ResolveReferences(runCtx, typed, policy)
+	case map[string]any:
+		return resolveRetryRequestMap(typed, runCtx)
+	case []any:
+		out := make([]any, len(typed))
+		for index, item := range typed {
+			out[index] = resolveRetryRequestValue(item, runCtx)
+		}
+		return out
+	default:
+		return value
+	}
 }

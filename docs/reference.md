@@ -707,6 +707,8 @@ Builds a structured value, casts types, and extracts data with regex.
 
 Retries one nested block with exponential backoff.
 
+The step succeeds only when the nested block stops matching the retry condition before the attempt budget is exhausted. If the final attempt still matches `retry_on`, the `retry` step fails with an exhaustion error even when the nested block itself returned no transport error.
+
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `block` | object | yes | | The block to retry (any block type) |
@@ -727,6 +729,31 @@ Retries one nested block with exponential backoff.
 |----------|-------------|
 | `!Retry.Attempt` | Current attempt number (1-based) |
 | `!Retry.MaxAttempts` | Configured max attempts |
+
+**Output fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `attempts` | int | Number of attempts that ran |
+| `max_attempts` | int | Configured attempt budget |
+| `delay_ms` | int | Initial retry delay |
+| `succeeded` | bool | Whether retry finished successfully |
+| `retryable` | bool | Whether the last attempt still matched `retry_on` |
+| `stopped_early` | bool | Whether execution stopped before exhausting attempts because the last failure was not retryable |
+| `result` | any | Nested block output from the last attempt |
+| `last_error` | string | Last nested error, or `retry exhausted after N attempts` on exhaustion |
+| `history` | []object | Per-attempt records for logging and JSON output |
+
+**`history[]` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `attempt` | int | 1-based attempt index |
+| `request` | object | Resolved request config for that attempt |
+| `result` | any | Nested block output for that attempt |
+| `error` | string | Nested block error text, if any |
+| `retryable` | bool | Whether this attempt triggered another retry |
+| `next_delay_ms` | int | Delay before the next attempt, or `0` for the final attempt |
 
 ```yaml
 - id: "wait_ready"
