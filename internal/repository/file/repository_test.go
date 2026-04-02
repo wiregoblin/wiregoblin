@@ -187,7 +187,7 @@ workflows:
 	if err == nil {
 		t.Fatal("expected parse to fail for legacy workflows map format")
 	}
-	if got := err.Error(); got != "parse yaml: workflows must be a sequence like 'workflows: [{id: ...}]' or YAML list items with '- id:'; map form is no longer supported" {
+	if got := err.Error(); got != "parse yaml: "+legacyWorkflowMapFormatError {
 		t.Fatalf("error = %q", got)
 	}
 }

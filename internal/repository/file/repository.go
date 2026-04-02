@@ -3,6 +3,7 @@ package filerepository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -102,13 +103,17 @@ type rawWorkflow struct {
 
 type rawWorkflows []rawWorkflow
 
+const legacyWorkflowMapFormatError = "" +
+	"workflows must be a sequence like 'workflows: [{id: ...}]' " +
+	"or YAML list items with '- id:'; map form is no longer supported"
+
 func (w *rawWorkflows) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.ScalarNode && value.Value == "" {
 		*w = nil
 		return nil
 	}
 	if value.Kind == yaml.MappingNode {
-		return fmt.Errorf("workflows must be a sequence like 'workflows: [{id: ...}]' or YAML list items with '- id:'; map form is no longer supported")
+		return errors.New(legacyWorkflowMapFormatError)
 	}
 	if value.Kind != yaml.SequenceNode {
 		return fmt.Errorf("workflows must be a sequence")
