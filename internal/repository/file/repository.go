@@ -75,7 +75,7 @@ type rawConfig struct {
 	Secrets         map[string]string `yaml:"secrets"`
 	Variables       yaml.Node         `yaml:"variables"`
 	SecretVariables yaml.Node         `yaml:"secret_variables"`
-	Workflows       []rawWorkflow     `yaml:"workflows"`
+	Workflows       rawWorkflows      `yaml:"workflows"`
 }
 
 type rawAIConfig struct {
@@ -98,6 +98,28 @@ type rawWorkflow struct {
 	SecretVariables  yaml.Node         `yaml:"secret_variables"`
 	Blocks           orderedBlocks     `yaml:"blocks"`
 	CatchErrorBlocks orderedBlocks     `yaml:"catch_error_blocks"`
+}
+
+type rawWorkflows []rawWorkflow
+
+func (w *rawWorkflows) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode && value.Value == "" {
+		*w = nil
+		return nil
+	}
+	if value.Kind == yaml.MappingNode {
+		return fmt.Errorf("workflows must be a sequence like 'workflows: [{id: ...}]' or YAML list items with '- id:'; map form is no longer supported")
+	}
+	if value.Kind != yaml.SequenceNode {
+		return fmt.Errorf("workflows must be a sequence")
+	}
+
+	var items []rawWorkflow
+	if err := value.Decode(&items); err != nil {
+		return err
+	}
+	*w = items
+	return nil
 }
 
 type blockEntry struct {
