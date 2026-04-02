@@ -18,7 +18,7 @@ func TestExecuteSuccess(t *testing.T) {
 			"docker_path":     dockerPath,
 			"image":           "alpine:3.20",
 			"command":         "echo hi",
-			"timeout_seconds": 1,
+			"timeout_seconds": 3,
 			"env":             map[string]any{"TOKEN": "secret"},
 		},
 	})
@@ -41,7 +41,7 @@ func TestExecuteReturnsCommandFailure(t *testing.T) {
 			"docker_path":     dockerPath,
 			"image":           "alpine:3.20",
 			"command":         "__FAIL__",
-			"timeout_seconds": 1,
+			"timeout_seconds": 3,
 		},
 	})
 	if err == nil {

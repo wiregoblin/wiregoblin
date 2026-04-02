@@ -93,16 +93,6 @@ func (a *App) executeWorkflow(ctx context.Context, projectID, workflowName strin
 	return err
 }
 
-func streamWorkflow(
-	events <-chan model.RunEvent,
-	verbosity int,
-	jsonOutput bool,
-	stdout, stderr io.Writer,
-) error {
-	_, err := streamWorkflowWithReport(events, verbosity, jsonOutput, stdout, stderr)
-	return err
-}
-
 type workflowReport struct {
 	steps            []model.RunEvent
 	failedStep       *model.RunEvent
