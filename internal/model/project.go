@@ -8,16 +8,28 @@ import (
 // BlockType identifies one workflow block implementation.
 type BlockType string
 
-// Definition holds a loaded project with all its workflows indexed by key.
+// Definition holds a loaded project with workflows in config order plus an ID index.
 type Definition struct {
-	Meta      *Project
-	Workflows map[string]*Workflow
+	Meta         *Project
+	Workflows    []*Workflow
+	WorkflowByID map[string]*Workflow
+}
+
+// AIConfig defines optional project-level AI runtime settings.
+type AIConfig struct {
+	Enabled        bool
+	Provider       string
+	BaseURL        string
+	Model          string
+	TimeoutSeconds int
+	RedactSecrets  bool
 }
 
 // Project is the editable project definition.
 type Project struct {
 	ID              string
 	Name            string
+	AI              *AIConfig
 	Constants       []Entry
 	Variables       []Entry
 	Secrets         []Entry

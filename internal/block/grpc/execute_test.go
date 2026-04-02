@@ -161,3 +161,35 @@ func TestExecuteReturnsInvokeError(t *testing.T) {
 		t.Fatalf("error = %v, want %v", err, wantErr)
 	}
 }
+
+func TestExecuteReturnsResolvedRequestOnInvokeError(t *testing.T) {
+	wantErr := errors.New("invoke failed")
+	block := &Block{
+		invoke: func(context.Context, Config) (string, error) {
+			return "", wantErr
+		},
+	}
+
+	result, err := block.Execute(context.Background(), &blockpkg.RunContext{
+		Variables: map[string]string{"UserID": "42"},
+		Constants: map[string]string{"Host": "localhost:50051"},
+	}, model.Step{
+		Config: map[string]any{
+			"address": "@Host",
+			"method":  "/svc.Method",
+			"request": `{"user_id":"$UserID"}`,
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if result == nil {
+		t.Fatal("result = nil, want request payload for logging")
+	}
+	if got := result.Request["address"]; got != "@Host" {
+		t.Fatalf("request.address = %#v, want original address field value", got)
+	}
+	if got := result.Request["request"]; got != `{"user_id":"42"}` {
+		t.Fatalf("request.request = %#v, want resolved request body", got)
+	}
+}

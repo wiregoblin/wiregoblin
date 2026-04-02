@@ -30,7 +30,7 @@ secret_variables:   # mutable runtime secrets, referenced as $name; support ${VA
   session_token: ""
 
 workflows:
-  workflow_id:
+  - id: workflow_id
     name: "Workflow Name"
     timeout_seconds: 30         # optional
     constants: {}               # workflow-scoped constants (override project-level)

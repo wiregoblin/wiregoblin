@@ -16,7 +16,7 @@ variables:
 secret_variables:
   sessionToken: hidden
 workflows:
-  sample:
+  - id: sample
     variables:
       workflowName: beta
       enabled: true
@@ -38,7 +38,7 @@ workflows:
 		t.Fatalf("expected sessionToken=hidden, got %q", got)
 	}
 
-	wf := project.Workflows["sample"]
+	wf := workflowByID(project, "sample")
 	if got := entryValue(wf.Variables, "workflowName"); got != "beta" {
 		t.Fatalf("expected workflowName=beta, got %q", got)
 	}
@@ -50,14 +50,139 @@ workflows:
 	}
 }
 
+func TestParsePreservesAIConfigWithDefaults(t *testing.T) {
+	project, err := parse([]byte(`
+id: demo
+name: Demo
+ai:
+  provider: Ollama
+  base_url: http://127.0.0.1:11434
+  model: llama3.1:8b
+workflows:
+  - id: sample
+    blocks: []
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if project.Meta.AI == nil {
+		t.Fatal("expected ai config to be parsed")
+	}
+	if !project.Meta.AI.Enabled {
+		t.Fatal("expected ai.enabled to default to true")
+	}
+	if got := project.Meta.AI.Provider; got != "ollama" {
+		t.Fatalf("provider = %q, want %q", got, "ollama")
+	}
+	if got := project.Meta.AI.BaseURL; got != "http://127.0.0.1:11434" {
+		t.Fatalf("base_url = %q, want %q", got, "http://127.0.0.1:11434")
+	}
+	if got := project.Meta.AI.Model; got != "llama3.1:8b" {
+		t.Fatalf("model = %q, want %q", got, "llama3.1:8b")
+	}
+	if !project.Meta.AI.RedactSecrets {
+		t.Fatal("expected ai.redact_secrets to default to true")
+	}
+}
+
+func TestParseAllowsDisabledAIWithoutRuntimeFields(t *testing.T) {
+	project, err := parse([]byte(`
+id: demo
+name: Demo
+ai:
+  enabled: false
+workflows:
+  - id: sample
+    blocks: []
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if project.Meta.AI == nil {
+		t.Fatal("expected ai config to be parsed")
+	}
+	if project.Meta.AI.Enabled {
+		t.Fatal("expected ai.enabled to be false")
+	}
+}
+
+func TestParseResolvesAIEnvReferences(t *testing.T) {
+	t.Setenv("WG_AI_PROVIDER", "openai_compatible")
+	t.Setenv("WG_AI_BASE_URL", "http://127.0.0.1:1234/v1")
+	t.Setenv("WG_AI_MODEL", "qwen2.5-coder-7b-instruct")
+
+	project, err := parse([]byte(`
+id: demo
+name: Demo
+ai:
+  provider: "${WG_AI_PROVIDER}"
+  base_url: "${WG_AI_BASE_URL}"
+  model: "${WG_AI_MODEL}"
+workflows:
+  - id: sample
+    blocks: []
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if project.Meta.AI == nil {
+		t.Fatal("expected ai config to be parsed")
+	}
+	if got := project.Meta.AI.Provider; got != "openai_compatible" {
+		t.Fatalf("provider = %q, want %q", got, "openai_compatible")
+	}
+	if got := project.Meta.AI.BaseURL; got != "http://127.0.0.1:1234/v1" {
+		t.Fatalf("base_url = %q, want %q", got, "http://127.0.0.1:1234/v1")
+	}
+	if got := project.Meta.AI.Model; got != "qwen2.5-coder-7b-instruct" {
+		t.Fatalf("model = %q, want %q", got, "qwen2.5-coder-7b-instruct")
+	}
+}
+
+func TestParseRejectsInvalidAIProvider(t *testing.T) {
+	_, err := parse([]byte(`
+id: demo
+name: Demo
+ai:
+  provider: lmstudio
+  base_url: http://127.0.0.1:1234/v1
+  model: qwen2.5
+workflows:
+  - id: sample
+    blocks: []
+`))
+	if err == nil {
+		t.Fatal("expected parse to fail for invalid provider")
+	}
+}
+
+func TestParseRejectsEnabledAIWithoutRequiredFields(t *testing.T) {
+	_, err := parse([]byte(`
+id: demo
+name: Demo
+ai:
+  enabled: true
+  provider: ollama
+workflows:
+  - id: sample
+    blocks: []
+`))
+	if err == nil {
+		t.Fatal("expected parse to fail when ai fields are missing")
+	}
+}
+
 func TestParsePreservesWorkflowTargetID(t *testing.T) {
 	project, err := parse([]byte(`
 id: demo
 name: Demo
 workflows:
-  child:
+  - id: child
     blocks: []
-  parent:
+  - id: parent
     blocks:
       - id: nested
         type: workflow
@@ -67,7 +192,7 @@ workflows:
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	target, _ := project.Workflows["parent"].Steps[0].Config["target_workflow_id"].(string)
+	target, _ := workflowByID(project, "parent").Steps[0].Config["target_workflow_id"].(string)
 	if target != "child" {
 		t.Fatalf("target_workflow_id = %q, want %q", target, "child")
 	}
@@ -78,7 +203,7 @@ func TestParsePreservesAssignConfig(t *testing.T) {
 id: demo
 name: Demo
 workflows:
-  sample:
+  - id: sample
     blocks:
       - id: step
         type: http
@@ -90,7 +215,7 @@ workflows:
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	config := project.Workflows["sample"].Steps[0].Config
+	config := workflowByID(project, "sample").Steps[0].Config
 	assign, ok := config["assign"].([]any)
 	if !ok {
 		t.Fatalf("expected normalized assign slice, got %#v", config["assign"])
@@ -105,7 +230,7 @@ func TestParsePreservesBlockSequenceOrder(t *testing.T) {
 id: demo
 name: Demo
 workflows:
-  sample:
+  - id: sample
     blocks:
       - id: second
         type: assert
@@ -122,7 +247,7 @@ workflows:
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	steps := project.Workflows["sample"].Steps
+	steps := workflowByID(project, "sample").Steps
 	if len(steps) != 2 {
 		t.Fatalf("expected 2 steps, got %d", len(steps))
 	}
@@ -136,7 +261,7 @@ func TestParsePreservesStepCondition(t *testing.T) {
 id: demo
 name: Demo
 workflows:
-  sample:
+  - id: sample
     blocks:
       - id: step
         type: log
@@ -149,7 +274,7 @@ workflows:
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	condition := project.Workflows["sample"].Steps[0].Condition
+	condition := workflowByID(project, "sample").Steps[0].Condition
 	if condition == nil {
 		t.Fatal("expected step condition to be parsed")
 	}
@@ -169,7 +294,7 @@ func TestParsePreservesContinueOnError(t *testing.T) {
 id: demo
 name: Demo
 workflows:
-  sample:
+  - id: sample
     blocks:
       - id: notify
         type: telegram
@@ -179,7 +304,7 @@ workflows:
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	if !project.Workflows["sample"].Steps[0].ContinueOnError {
+	if !workflowByID(project, "sample").Steps[0].ContinueOnError {
 		t.Fatal("expected continue_on_error to be parsed")
 	}
 }
@@ -189,7 +314,7 @@ func TestParsePreservesWorkflowTimeoutSeconds(t *testing.T) {
 id: demo
 name: Demo
 workflows:
-  sample:
+  - id: sample
     timeout_seconds: 30
     blocks: []
 `))
@@ -197,7 +322,7 @@ workflows:
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	if got := project.Workflows["sample"].TimeoutSeconds; got != 30 {
+	if got := workflowByID(project, "sample").TimeoutSeconds; got != 30 {
 		t.Fatalf("timeout_seconds = %d, want 30", got)
 	}
 }
@@ -207,7 +332,7 @@ func TestParsePreservesWorkflowOutputs(t *testing.T) {
 id: demo
 name: Demo
 workflows:
-  sample:
+  - id: sample
     outputs:
       child_run_label: "$child_run_label"
     blocks: []
@@ -216,7 +341,7 @@ workflows:
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	outputs := project.Workflows["sample"].Outputs
+	outputs := workflowByID(project, "sample").Outputs
 	if got := outputs["child_run_label"]; got != "$child_run_label" {
 		t.Fatalf("outputs[child_run_label] = %q, want %q", got, "$child_run_label")
 	}
@@ -229,4 +354,11 @@ func entryValue(entries []model.Entry, key string) string {
 		}
 	}
 	return ""
+}
+
+func workflowByID(def *model.Definition, id string) *model.Workflow {
+	if def == nil {
+		return nil
+	}
+	return def.WorkflowByID[id]
 }

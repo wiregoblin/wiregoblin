@@ -50,10 +50,17 @@ func runCmd(args []string) {
 	var envFile string
 	var verbosity int
 	var jsonOutput bool
+	var aiSummarySuccess bool
 	fs.StringVarP(&projectPath, "project", "p", "", "Path to the project YAML config file")
 	fs.StringVarP(&envFile, "env", "e", "", "Path to a .env file to load before running")
 	fs.CountVarP(&verbosity, "verbose", "v", "Increase execution detail level: -v, -vv, -vvv")
 	fs.BoolVar(&jsonOutput, "json", false, "Print workflow results as JSON to stdout")
+	fs.BoolVar(
+		&aiSummarySuccess,
+		"ai-summary-success",
+		false,
+		"Print an AI summary after successful runs when project AI is enabled",
+	)
 
 	if err := fs.Parse(args); err != nil {
 		if err != pflag.ErrHelp {
@@ -93,22 +100,38 @@ func runCmd(args []string) {
 		workflowID = &positional[0]
 	}
 
-	if err := run(resolved, workflowID, verbosity, jsonOutput, os.Stdout, os.Stderr); err != nil {
+	if err := run(
+		resolved,
+		workflowID,
+		verbosity,
+		jsonOutput,
+		aiSummarySuccess,
+		os.Stdout,
+		os.Stderr,
+	); err != nil {
 		os.Exit(1)
 	}
 }
 
-func run(projectPath string, workflowID *string, verbosity int, jsonOutput bool, stdout, stderr io.Writer) error {
+func run(
+	projectPath string,
+	workflowID *string,
+	verbosity int,
+	jsonOutput bool,
+	aiSummarySuccess bool,
+	stdout, stderr io.Writer,
+) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	app := cliapp.New(projectPath)
 	return app.Run(ctx, workflowID, cliapp.ExecuteOptions{
-		RunOptions: workflowservice.RunOptions{Context: ctx},
-		Verbosity:  verbosity,
-		JSONOutput: jsonOutput,
-		Stdout:     stdout,
-		Stderr:     stderr,
+		RunOptions:       workflowservice.RunOptions{Context: ctx},
+		Verbosity:        verbosity,
+		JSONOutput:       jsonOutput,
+		AISummarySuccess: aiSummarySuccess,
+		Stdout:           stdout,
+		Stderr:           stderr,
 	})
 }
 
@@ -154,6 +177,7 @@ Examples:
   wiregoblin-cli run -p config/myproject.yaml http_example
   wiregoblin-cli run -e .env -p config/myproject.yaml http_example
   wiregoblin-cli run -v -p config/myproject.yaml http_example
+  wiregoblin-cli run --ai-summary-success -p config/myproject.yaml http_example
   wiregoblin-cli run --json -p config/myproject.yaml http_example
 `
 
@@ -162,11 +186,12 @@ const runUsageText = `Run a workflow (or all workflows) from a project config
 Usage:
   wiregoblin-cli run [flags] [workflow_id]
 
-If workflow_id is omitted, all workflows are run sequentially in alphabetical order.
+If workflow_id is omitted, all workflows are run sequentially in config order.
 
 Flags:
   -p, --project  Path to the project YAML config file
   -e, --env      Path to a .env file to load before running
   -v, --verbose  Increase execution detail level: -v, -vv, -vvv
+      --ai-summary-success Print an AI summary after successful runs when project AI is enabled
       --json     Print workflow results as JSON to stdout
 `

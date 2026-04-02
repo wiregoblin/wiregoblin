@@ -2,6 +2,14 @@ id: "example1"
 name: "Example"
 version: 1
 
+ai:
+  enabled: true
+  provider: "ollama"
+  base_url: "${OLLAMA_URL:=http://127.0.0.1:11434}"
+  model: "${OLLAMA_MODEL:=qwen3:4b}"
+  timeout_seconds: 60
+  redact_secrets: true
+
 constants:
   grpc_host: "demo.connectrpc.com:443"
   users_url: "http://127.0.0.1:18080/users/1"
@@ -37,7 +45,7 @@ variables:
   run_label: "bootstrap"
 
 workflows:
-  http_example:
+  - id: http_example
     name: "HTTP Example"
     blocks:
       - id: "request1"
@@ -74,7 +82,7 @@ workflows:
         expected: "5000"
         error_message: "HTTP example exceeded expected response time budget"
 
-  grpc_example:
+  - id: grpc_example
     name: "gRPC Example"
     blocks:
       - id: "say"
@@ -108,7 +116,7 @@ workflows:
         expected: "5000"
         error_message: "gRPC example exceeded expected response time budget"
 
-  http_post_example:
+  - id: http_post_example
     name: "HTTP POST Example"
     blocks:
       - id: "create_user"
@@ -138,7 +146,7 @@ workflows:
         expected: "Alice Goblin"
         error_message: "HTTP POST example did not return the created user"
 
-  local_stack_example:
+  - id: local_stack_example
     name: "Local Stack Example"
     constants:
       local_run_id: "local-stack-user"
@@ -305,7 +313,7 @@ workflows:
         expected: "200"
         error_message: "Telegram mock did not return 200"
 
-  goto_example:
+  - id: goto_example
     name: "Goto Example"
     variables:
       retry_state: "retry"
@@ -338,7 +346,7 @@ workflows:
         expected: "done"
         error_message: "Goto example did not land on the expected step"
 
-  workflow_timeout_example:
+  - id: workflow_timeout_example
     name: "Workflow Timeout Example"
     timeout_seconds: 3
     variables:
@@ -353,7 +361,7 @@ workflows:
         target_step_id: "loop_forever"
         wait_seconds: 1
 
-  retry_example:
+  - id: retry_example
     name: "Retry Example"
     blocks:
       - id: "retry_fetch_user"
@@ -391,7 +399,51 @@ workflows:
         level: "info"
         message: "Retry example fetched user $retry_user_id"
 
-  foreach_example:
+  - id: retry_exhaustion_example
+    name: "Retry Exhaustion Example"
+    blocks:
+      - id: "retry_missing_user"
+        name: "Retry Missing User"
+        type: "retry"
+        continue_on_error: true
+        max_attempts: 3
+        delay_ms: 100
+        retry_on:
+          match: "any"
+          rules:
+            - type: "status_code"
+              in: [404]
+        block:
+          type: "http"
+          method: "GET"
+          url: "http://127.0.0.1:18080/users/missing"
+          headers:
+            X-Retry-Attempt: "!Retry.Attempt"
+          assign:
+            $retry_exhaustion_status: "outputs.statusCode"
+
+      - id: "retry_user_state_not_ready"
+        name: "Retry User State Not Ready"
+        type: "retry"
+        max_attempts: 3
+        delay_ms: 100
+        retry_on:
+          match: "any"
+          rules:
+            - type: "path"
+              path: "body.role"
+              operator: "="
+              expected: "maintainer"
+        block:
+          type: "http"
+          method: "GET"
+          url: "@users_url"
+          headers:
+            X-Retry-Attempt: "!Retry.Attempt"
+          assign:
+            $retry_state_status: "outputs.statusCode"
+
+  - id: foreach_example
     name: "Foreach Example"
     variables:
       users_batch: '[{"id":"101","name":"Alice Goblin"},{"id":"102","name":"Bob Goblin"},{"id":"103","name":"Carol Goblin"}]'
@@ -425,7 +477,7 @@ workflows:
         expected: "Carol Goblin"
         error_message: "Foreach example did not collect the expected user names"
 
-  foreach_range_example:
+  - id: foreach_range_example
     name: "Foreach Range Example"
     blocks:
       - id: "generate_range"
@@ -450,7 +502,7 @@ workflows:
         expected: "[1,3,5]"
         error_message: "Foreach range example did not collect the expected values"
 
-  postgres_transaction_example:
+  - id: postgres_transaction_example
     name: "Postgres Transaction Example"
     constants:
       local_run_id: "postgres-tx-user"
@@ -502,7 +554,7 @@ workflows:
         expected: "1"
         error_message: "Postgres transaction example did not assign the expected row count"
 
-  parallel_example:
+  - id: parallel_example
     name: "Parallel Example"
     blocks:
       - id: "prepare_data"
@@ -541,7 +593,7 @@ workflows:
         expected: "parallel-demo-token"
         error_message: "parallel example did not collect setvars export"
 
-  transform_example:
+  - id: transform_example
     name: "Transform Example"
     variables:
       user_id: "42"
@@ -605,7 +657,7 @@ workflows:
         expected: '"id":42'
         error_message: "Transform example JSON did not contain the expected numeric id"
 
-  email_example:
+  - id: email_example
     name: "Email Example"
     variables:
       verification_code: "123456"
@@ -680,7 +732,7 @@ workflows:
         expected: "$verification_code"
         error_message: "Email example did not extract the expected verification code"
 
-  error_handler_example:
+  - id: error_handler_example
     name: "Error Handler Example"
     blocks:
       - id: "force_failure"
@@ -699,7 +751,7 @@ workflows:
         chat_id: "@mock_telegram_chat_id"
         message: "!ErrorMessage"
 
-  continue_on_error_example:
+  - id: continue_on_error_example
     name: "Continue On Error Example"
     blocks:
       - id: "best_effort_notification"
@@ -719,7 +771,7 @@ workflows:
         expected: "bootstrap"
         error_message: "continue_on_error example did not continue after the ignored failure"
 
-  secret_variables_example:
+  - id: secret_variables_example
     name: "Secret Variables Example"
     secret_variables:
       session_token: ""
@@ -738,7 +790,7 @@ workflows:
         expected: "secret-demo-token"
         error_message: "secret_variables example did not populate session_token"
 
-  parent_builtins_child_example:
+  - id: parent_builtins_child_example
     name: "Parent Built-ins Child Example"
     outputs:
       child_run_label: "$child_run_label"
@@ -749,7 +801,7 @@ workflows:
         set:
           $child_run_label: "Parent workflow !Parent.WorkflowName (!Parent.WorkflowID) invoked this child workflow for $run_label"
 
-  workflow_block_example:
+  - id: workflow_block_example
     name: "Workflow Block Example"
     blocks:
       - id: "nested_workflow"

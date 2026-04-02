@@ -91,22 +91,30 @@ func execute(ctx context.Context, config telegramConfig) (*block.Result, error) 
 	if err != nil {
 		return nil, fmt.Errorf("marshal telegram request: %w", err)
 	}
+	endpoint := buildEndpoint(config.BaseURL, config.Token)
+	request := map[string]any{
+		"method":  http.MethodPost,
+		"url":     endpoint,
+		"headers": map[string]any{},
+		"body":    payload,
+	}
 
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		buildEndpoint(config.BaseURL, config.Token),
+		endpoint,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build telegram request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	request["headers"] = cloneHeaders(req.Header)
 
 	// #nosec G704 -- Telegram requests intentionally target configured API endpoints.
 	resp, err := clientForTimeout(httpClient, config.TimeoutSeconds).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("telegram request failed: %w", err)
+		return &block.Result{Request: request}, fmt.Errorf("telegram request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -131,10 +139,10 @@ func execute(ctx context.Context, config telegramConfig) (*block.Result, error) 
 		"body":       string(rawBody),
 	}
 	if resp.StatusCode >= 400 {
-		return &block.Result{Output: output, Exports: exports}, fmt.Errorf("telegram %s", resp.Status)
+		return &block.Result{Output: output, Exports: exports, Request: request}, fmt.Errorf("telegram %s", resp.Status)
 	}
 
-	return &block.Result{Output: output, Exports: exports}, nil
+	return &block.Result{Output: output, Exports: exports, Request: request}, nil
 }
 
 func buildEndpoint(baseURL, token string) string {
@@ -153,4 +161,23 @@ func clientForTimeout(base *http.Client, timeoutSeconds int) *http.Client {
 	client := *base
 	client.Timeout = time.Duration(timeoutSeconds) * time.Second
 	return &client
+}
+
+func cloneHeaders(headers http.Header) map[string]any {
+	if len(headers) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(headers))
+	for key, values := range headers {
+		if len(values) == 1 {
+			out[key] = values[0]
+			continue
+		}
+		items := make([]any, len(values))
+		for i, value := range values {
+			items[i] = value
+		}
+		out[key] = items
+	}
+	return out
 }

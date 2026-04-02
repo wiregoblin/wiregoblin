@@ -10,16 +10,18 @@ import (
 	"time"
 
 	"github.com/wiregoblin/wiregoblin/internal/model"
+	aiservice "github.com/wiregoblin/wiregoblin/internal/service/ai"
 	workflowservice "github.com/wiregoblin/wiregoblin/internal/service/workflow"
 )
 
 // ExecuteOptions configures one CLI workflow execution.
 type ExecuteOptions struct {
-	RunOptions workflowservice.RunOptions
-	Verbosity  int
-	JSONOutput bool
-	Stdout     io.Writer
-	Stderr     io.Writer
+	RunOptions       workflowservice.RunOptions
+	Verbosity        int
+	JSONOutput       bool
+	AISummarySuccess bool
+	Stdout           io.Writer
+	Stderr           io.Writer
 }
 
 // Run runs one workflow if workflowID is set, or all project workflows sequentially if nil.
@@ -64,6 +66,14 @@ func (a *App) ExecuteWorkflow(ctx context.Context, workflowName string, opts Exe
 }
 
 func (a *App) executeWorkflow(ctx context.Context, projectID, workflowName string, opts ExecuteOptions) error {
+	project, err := a.projects.GetProject(ctx, projectID)
+	if err != nil {
+		if !opts.JSONOutput {
+			_, _ = fmt.Fprintln(opts.Stderr, err)
+		}
+		return err
+	}
+
 	events, err := a.service.RunWorkflow(ctx, projectID, workflowName, opts.RunOptions)
 	if err != nil {
 		if !opts.JSONOutput {
@@ -71,7 +81,16 @@ func (a *App) executeWorkflow(ctx context.Context, projectID, workflowName strin
 		}
 		return err
 	}
-	return streamWorkflow(events, opts.Verbosity, opts.JSONOutput, opts.Stdout, opts.Stderr)
+
+	report, err := streamWorkflowWithReport(events, opts.Verbosity, opts.JSONOutput, opts.Stdout, opts.Stderr)
+	if project.Meta != nil && project.Meta.AI != nil && project.Meta.AI.Enabled {
+		if report.failedWorkflow != nil {
+			printAIFailureSummary(ctx, opts.Stderr, project.Meta.AI, report)
+		} else if opts.AISummarySuccess && report.workflowFinished != nil && report.workflowFinished.Error == "" {
+			printAISuccessSummary(ctx, opts.Stderr, project.Meta.AI, report)
+		}
+	}
+	return err
 }
 
 func streamWorkflow(
@@ -80,12 +99,33 @@ func streamWorkflow(
 	jsonOutput bool,
 	stdout, stderr io.Writer,
 ) error {
+	_, err := streamWorkflowWithReport(events, verbosity, jsonOutput, stdout, stderr)
+	return err
+}
+
+type workflowReport struct {
+	steps            []model.RunEvent
+	failedStep       *model.RunEvent
+	failedWorkflow   *model.RunEvent
+	workflowFinished *model.RunEvent
+	passed           int
+	skipped          int
+	ignoredError     int
+}
+
+func streamWorkflowWithReport(
+	events <-chan model.RunEvent,
+	verbosity int,
+	jsonOutput bool,
+	stdout, stderr io.Writer,
+) (*workflowReport, error) {
 	var runErr error
+	report := &workflowReport{}
 	text := newTextRenderer(stderr, verbosity)
 	for event := range events {
 		if jsonOutput {
 			if err := printEventJSON(stdout, event); err != nil {
-				return err
+				return report, err
 			}
 			flushWriter(stdout)
 		} else {
@@ -93,11 +133,33 @@ func streamWorkflow(
 			flushWriter(stderr)
 		}
 
+		if event.Type == model.EventStepFinished && event.Status == "failed" {
+			stepCopy := event
+			report.failedStep = &stepCopy
+		}
+		if event.Type == model.EventStepFinished {
+			stepCopy := event
+			report.steps = append(report.steps, stepCopy)
+			switch event.Status {
+			case "ok":
+				report.passed++
+			case "skipped":
+				report.skipped++
+			case "ignored-error":
+				report.ignoredError++
+			}
+		}
 		if event.Type == model.EventWorkflowFinished && event.Error != "" {
+			eventCopy := event
+			report.failedWorkflow = &eventCopy
 			runErr = errors.New(event.Error)
 		}
+		if event.Type == model.EventWorkflowFinished {
+			eventCopy := event
+			report.workflowFinished = &eventCopy
+		}
 	}
-	return runErr
+	return report, runErr
 }
 
 func printEventJSON(out io.Writer, event model.RunEvent) error {
@@ -422,4 +484,112 @@ func flushWriter(writer io.Writer) {
 	case flushNoError:
 		typed.Flush()
 	}
+}
+
+func printAIFailureSummary(ctx context.Context, stderr io.Writer, config *model.AIConfig, report *workflowReport) {
+	if config == nil || report == nil || report.failedWorkflow == nil {
+		return
+	}
+
+	input := aiservice.DebugInput{
+		ProjectID:    report.failedWorkflow.ProjectID,
+		ProjectName:  report.failedWorkflow.ProjectName,
+		WorkflowID:   report.failedWorkflow.WorkflowID,
+		WorkflowName: report.failedWorkflow.WorkflowName,
+		Error:        report.failedWorkflow.Error,
+	}
+	if report.failedStep != nil {
+		input.StepIndex = report.failedStep.Index
+		input.StepName = report.failedStep.Step
+		input.StepType = report.failedStep.StepType
+		input.Error = report.failedStep.Error
+		input.Request = report.failedStep.Request
+		input.Response = report.failedStep.Response
+	}
+
+	explanation, err := aiservice.ExplainFailure(ctx, config, input)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "🤖 AI summary unavailable: %v\n", err)
+		return
+	}
+
+	_, _ = fmt.Fprintln(stderr, "🤖 AI summary:")
+	_, _ = fmt.Fprintln(stderr, indent("   ", explanation))
+	flushWriter(stderr)
+}
+
+func printAISuccessSummary(ctx context.Context, stderr io.Writer, config *model.AIConfig, report *workflowReport) {
+	if config == nil || report == nil || report.workflowFinished == nil {
+		return
+	}
+
+	input := aiservice.SuccessInput{
+		ProjectID:    report.workflowFinished.ProjectID,
+		ProjectName:  report.workflowFinished.ProjectName,
+		WorkflowID:   report.workflowFinished.WorkflowID,
+		WorkflowName: report.workflowFinished.WorkflowName,
+		DurationMS:   report.workflowFinished.DurationMS,
+		Passed:       report.passed,
+		Skipped:      report.skipped,
+		IgnoredError: report.ignoredError,
+	}
+	for _, step := range interestingSuccessfulSteps(report.steps) {
+		input.InterestingStep = append(input.InterestingStep, aiservice.SuccessfulStep{
+			Name:            step.Step,
+			Type:            step.StepType,
+			Status:          step.Status,
+			DurationMS:      step.DurationMS,
+			Error:           step.Error,
+			Attempts:        retryAttemptCount(step),
+			RequestExample:  compactExample(step.Request),
+			ResponseExample: compactExample(step.Response),
+		})
+	}
+
+	explanation, err := aiservice.SummarizeSuccess(ctx, config, input)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "🤖 AI summary unavailable: %v\n", err)
+		return
+	}
+
+	_, _ = fmt.Fprintln(stderr, "🤖 AI summary:")
+	_, _ = fmt.Fprintln(stderr, indent("   ", explanation))
+	flushWriter(stderr)
+}
+
+func interestingSuccessfulSteps(steps []model.RunEvent) []model.RunEvent {
+	if len(steps) == 0 {
+		return nil
+	}
+
+	items := make([]model.RunEvent, 0, len(steps))
+	for _, step := range steps {
+		if step.Status == "skipped" ||
+			step.Status == "ignored-error" ||
+			retryAttemptCount(step) > 1 ||
+			step.StepType == "workflow" ||
+			step.StepType == "parallel" {
+			items = append(items, step)
+			continue
+		}
+		if compactExample(step.Request) != "" || compactExample(step.Response) != "" {
+			items = append(items, step)
+			continue
+		}
+		if step.DurationMS >= 1000 {
+			items = append(items, step)
+		}
+	}
+	if len(items) > 6 {
+		return items[:6]
+	}
+	return items
+}
+
+func compactExample(value any) string {
+	text := summarizeValue(value)
+	if text == "" || text == "null" || text == "{}" || text == "[]" {
+		return ""
+	}
+	return text
 }

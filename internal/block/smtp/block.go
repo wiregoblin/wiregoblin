@@ -106,40 +106,41 @@ func (b *Block) Validate(step model.Step) error {
 // Execute sends one SMTP message and returns delivery metadata.
 func (b *Block) Execute(ctx context.Context, _ *block.RunContext, step model.Step) (*block.Result, error) {
 	config := decodeConfig(step)
+	request := smtpRequest(config)
 	client, err := b.newClient(ctx, config)
 	if err != nil {
-		return nil, err
+		return &block.Result{Request: request}, err
 	}
 	defer func() { _ = client.Close() }()
 
 	messageID := generateMessageID(b.now(), config.from)
 	message, err := buildMessage(config, messageID)
 	if err != nil {
-		return nil, err
+		return &block.Result{Request: request}, err
 	}
 
 	if err := client.Mail(config.from); err != nil {
-		return nil, fmt.Errorf("smtp mail from: %w", err)
+		return &block.Result{Request: request}, fmt.Errorf("smtp mail from: %w", err)
 	}
 	recipients := recipients(config)
 	for _, recipient := range recipients {
 		if err := client.Rcpt(recipient); err != nil {
-			return nil, fmt.Errorf("smtp rcpt %s: %w", recipient, err)
+			return &block.Result{Request: request}, fmt.Errorf("smtp rcpt %s: %w", recipient, err)
 		}
 	}
 	writer, err := client.Data()
 	if err != nil {
-		return nil, fmt.Errorf("smtp data: %w", err)
+		return &block.Result{Request: request}, fmt.Errorf("smtp data: %w", err)
 	}
 	if _, err := writer.Write(message); err != nil {
 		_ = writer.Close()
-		return nil, fmt.Errorf("smtp write message: %w", err)
+		return &block.Result{Request: request}, fmt.Errorf("smtp write message: %w", err)
 	}
 	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("smtp finalize message: %w", err)
+		return &block.Result{Request: request}, fmt.Errorf("smtp finalize message: %w", err)
 	}
 	if err := client.Quit(); err != nil {
-		return nil, fmt.Errorf("smtp quit: %w", err)
+		return &block.Result{Request: request}, fmt.Errorf("smtp quit: %w", err)
 	}
 
 	output := map[string]any{
@@ -153,7 +154,46 @@ func (b *Block) Execute(ctx context.Context, _ *block.RunContext, step model.Ste
 			"message_id": messageID,
 			"subject":    config.subject,
 		},
+		Request: request,
 	}, nil
+}
+
+func smtpRequest(config smtpConfig) map[string]any {
+	request := map[string]any{
+		"host":     config.host,
+		"port":     config.port,
+		"tls":      config.tls,
+		"starttls": config.startTLS,
+		"from":     config.from,
+		"to":       cloneStringSlice(config.to),
+		"cc":       cloneStringSlice(config.cc),
+		"bcc":      cloneStringSlice(config.bcc),
+		"subject":  config.subject,
+	}
+	if config.username != "" {
+		request["username"] = config.username
+	}
+	if config.password != "" {
+		request["password"] = config.password
+	}
+	if config.text != "" {
+		request["text"] = config.text
+	}
+	if config.html != "" {
+		request["html"] = config.html
+	}
+	return request
+}
+
+func cloneStringSlice(values []string) []any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]any, len(values))
+	for i, value := range values {
+		out[i] = value
+	}
+	return out
 }
 
 func dialSMTPClient(ctx context.Context, config smtpConfig) (smtpClient, error) {

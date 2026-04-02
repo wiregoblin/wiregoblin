@@ -76,6 +76,13 @@ func TestExecuteSuccess(t *testing.T) {
 	if output["status"] != 200 {
 		t.Fatalf("status = %v, want 200", output["status"])
 	}
+	if result.Request["method"] != http.MethodPost {
+		t.Fatalf("request.method = %#v, want POST", result.Request["method"])
+	}
+	body := result.Request["body"].(map[string]any)
+	if body["chat_id"] != "42" {
+		t.Fatalf("request.body.chat_id = %#v, want 42", body["chat_id"])
+	}
 }
 
 func TestExecuteReturnsErrorResponse(t *testing.T) {
@@ -107,6 +114,9 @@ func TestExecuteReturnsErrorResponse(t *testing.T) {
 	output := result.Output.(map[string]any)
 	if output["status"] != 400 {
 		t.Fatalf("status = %v, want 400", output["status"])
+	}
+	if result.Request == nil {
+		t.Fatal("request = nil, want request for logging")
 	}
 }
 

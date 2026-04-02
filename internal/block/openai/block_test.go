@@ -74,6 +74,17 @@ func TestExecuteSuccess(t *testing.T) {
 	if output["status"] != 200 {
 		t.Fatalf("status = %v, want 200", output["status"])
 	}
+	if result.Request["method"] != http.MethodPost {
+		t.Fatalf("request.method = %#v, want POST", result.Request["method"])
+	}
+	headers := result.Request["headers"].(map[string]any)
+	if headers["Authorization"] != "Bearer secret-token" {
+		t.Fatalf("request.headers.Authorization = %#v", headers["Authorization"])
+	}
+	body := result.Request["body"].(map[string]any)
+	if body["model"] != "gpt-test" {
+		t.Fatalf("request.body.model = %#v, want gpt-test", body["model"])
+	}
 }
 
 func TestExecuteReturnsErrorResponse(t *testing.T) {
@@ -104,6 +115,9 @@ func TestExecuteReturnsErrorResponse(t *testing.T) {
 	output := result.Output.(map[string]any)
 	if output["status"] != 401 {
 		t.Fatalf("status = %v, want 401", output["status"])
+	}
+	if result.Request == nil {
+		t.Fatal("request = nil, want request for logging")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wiregoblin/wiregoblin/internal/model"
 )
@@ -56,6 +57,13 @@ func TestExecuteReadsLatestMatchingMessage(t *testing.T) {
 	if got := message["subject"]; got != "Verify your email" {
 		t.Fatalf("subject = %v", got)
 	}
+	if result.Request["mailbox"] != "INBOX" {
+		t.Fatalf("request.mailbox = %#v, want INBOX", result.Request["mailbox"])
+	}
+	criteria := result.Request["criteria"].(map[string]any)
+	if criteria["message_id"] != "<demo@example.com>" {
+		t.Fatalf("request.criteria.message_id = %#v", criteria["message_id"])
+	}
 	if got := result.Exports["text"]; got != "Your code is 123456" {
 		t.Fatalf("text export = %q", got)
 	}
@@ -65,6 +73,50 @@ func TestExecuteReadsLatestMatchingMessage(t *testing.T) {
 			t.Fatalf("serveIMAP() error = %v", err)
 		}
 	default:
+	}
+}
+
+func TestExecuteReturnsRequestWhenMessageNotFound(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	errCh := make(chan error, 1)
+
+	go serveIMAP(serverConn, []string{
+		`* OK IMAP4rev1 Service Ready`,
+		`A001 OK LOGIN completed`,
+		`* 0 EXISTS`,
+		`A002 OK SELECT completed`,
+		`* SEARCH`,
+		`A003 OK SEARCH completed`,
+	}, nil, errCh)
+
+	block := New()
+	block.dial = func(context.Context, imapConfig) (net.Conn, error) { return clientConn, nil }
+	nowCalls := 0
+	block.now = func() time.Time {
+		nowCalls++
+		return time.Unix(int64(nowCalls), 0)
+	}
+	result, err := block.Execute(context.Background(), nil, model.Step{
+		Config: map[string]any{
+			"host":     "imap.example.com",
+			"port":     993,
+			"username": "demo",
+			"password": "secret",
+			"mailbox":  "INBOX",
+			"criteria": map[string]any{
+				"subject_contains": "Verify",
+			},
+			"wait": map[string]any{
+				"timeout_ms": 1,
+			},
+		},
+	})
+	if err == nil || err.Error() != "imap message not found" {
+		t.Fatalf("error = %v, want imap message not found", err)
+	}
+	if result == nil || result.Request == nil {
+		t.Fatal("request = nil, want request for logging")
 	}
 }
 

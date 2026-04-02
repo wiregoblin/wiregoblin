@@ -57,6 +57,35 @@ wiregoblin-cli run -e .env my_workflow
 
 ---
 
+## Project AI config
+
+`ai` is an optional project-level section that configures a shared local AI runtime for features such as failed-run debugging, output summarization, and failure classification.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | bool | no | Enables AI features. Defaults to `true` when the `ai` section is present. |
+| `provider` | string | yes, if enabled | `ollama` or `openai_compatible` |
+| `base_url` | string | yes, if enabled | Base URL of the local AI server |
+| `model` | string | yes, if enabled | Model identifier used for analysis |
+| `timeout_seconds` | int | no | Timeout for AI requests |
+| `redact_secrets` | bool | no | Redact project secrets before building AI prompts. Defaults to `true`. |
+
+Example:
+
+```yaml
+ai:
+  enabled: true
+  provider: "ollama"
+  base_url: "${OLLAMA_URL:=http://127.0.0.1:11434}"
+  model: "${OLLAMA_MODEL:=qwen3:4b}"
+  timeout_seconds: 30
+  redact_secrets: true
+```
+
+For LM Studio, use `provider: "openai_compatible"` and point `base_url` to the local `/v1` endpoint.
+
+---
+
 ## Global built-ins
 
 Available in every step of every workflow via `!name`.

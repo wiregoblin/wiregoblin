@@ -74,9 +74,10 @@ func (b *Block) Validate(step model.Step) error {
 // Execute polls the configured mailbox until a matching message is found or the wait deadline is reached.
 func (b *Block) Execute(ctx context.Context, _ *block.RunContext, step model.Step) (*block.Result, error) {
 	config := decodeConfig(step)
+	request := imapRequest(config)
 	conn, err := b.dial(ctx, config)
 	if err != nil {
-		return nil, err
+		return &block.Result{Request: request}, err
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -86,14 +87,14 @@ func (b *Block) Execute(ctx context.Context, _ *block.RunContext, step model.Ste
 		w:    bufio.NewWriter(conn),
 	}
 	if err := client.readGreeting(); err != nil {
-		return nil, err
+		return &block.Result{Request: request}, err
 	}
 	if err := client.login(config.username, config.password); err != nil {
-		return nil, err
+		return &block.Result{Request: request}, err
 	}
 	defer func() { _ = client.logout() }()
 	if err := client.selectMailbox(config.mailbox); err != nil {
-		return nil, err
+		return &block.Result{Request: request}, err
 	}
 
 	deadline := time.Time{}
@@ -104,20 +105,20 @@ func (b *Block) Execute(ctx context.Context, _ *block.RunContext, step model.Ste
 	for {
 		message, err := client.findMessage(config)
 		if err != nil {
-			return nil, err
+			return &block.Result{Request: request}, err
 		}
 		if message != nil {
 			if config.markAsSeen {
 				if err := client.storeFlags(message.Sequence, `\Seen`); err != nil {
-					return nil, err
+					return &block.Result{Request: request}, err
 				}
 			}
 			if config.delete {
 				if err := client.storeFlags(message.Sequence, `\Deleted`); err != nil {
-					return nil, err
+					return &block.Result{Request: request}, err
 				}
 				if err := client.expunge(); err != nil {
-					return nil, err
+					return &block.Result{Request: request}, err
 				}
 			}
 			output := map[string]any{
@@ -133,6 +134,7 @@ func (b *Block) Execute(ctx context.Context, _ *block.RunContext, step model.Ste
 					"text":       message.Text,
 					"html":       message.HTML,
 				},
+				Request: request,
 			}, nil
 		}
 		if deadline.IsZero() || !b.now().Before(deadline) {
@@ -141,6 +143,7 @@ func (b *Block) Execute(ctx context.Context, _ *block.RunContext, step model.Ste
 					"mailbox": config.mailbox,
 					"matched": false,
 				},
+				Request: request,
 			}, fmt.Errorf("imap message not found")
 		}
 		wait := time.Duration(config.wait.PollIntervalMS) * time.Millisecond
@@ -151,10 +154,59 @@ func (b *Block) Execute(ctx context.Context, _ *block.RunContext, step model.Ste
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, ctx.Err()
+			return &block.Result{Request: request}, ctx.Err()
 		case <-timer.C:
 		}
 	}
+}
+
+func imapRequest(config imapConfig) map[string]any {
+	request := map[string]any{
+		"host":     config.host,
+		"port":     config.port,
+		"tls":      config.tls,
+		"mailbox":  config.mailbox,
+		"criteria": map[string]any{},
+	}
+	if config.username != "" {
+		request["username"] = config.username
+	}
+	if config.password != "" {
+		request["password"] = config.password
+	}
+	criteria := request["criteria"].(map[string]any)
+	if config.criteria.MessageID != "" {
+		criteria["message_id"] = config.criteria.MessageID
+	}
+	if config.criteria.To != "" {
+		criteria["to"] = config.criteria.To
+	}
+	if config.criteria.SubjectContains != "" {
+		criteria["subject_contains"] = config.criteria.SubjectContains
+	}
+	if config.criteria.BodyContains != "" {
+		criteria["body_contains"] = config.criteria.BodyContains
+	}
+	if config.criteria.UnseenOnly {
+		criteria["unseen_only"] = true
+	}
+	if config.wait.TimeoutMS > 0 || config.wait.PollIntervalMS > 0 {
+		wait := map[string]any{}
+		if config.wait.TimeoutMS > 0 {
+			wait["timeout_ms"] = config.wait.TimeoutMS
+		}
+		if config.wait.PollIntervalMS > 0 {
+			wait["poll_interval_ms"] = config.wait.PollIntervalMS
+		}
+		request["wait"] = wait
+	}
+	if config.markAsSeen {
+		request["mark_as_seen"] = true
+	}
+	if config.delete {
+		request["delete"] = true
+	}
+	return request
 }
 
 func dialIMAP(ctx context.Context, config imapConfig) (net.Conn, error) {

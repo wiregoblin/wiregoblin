@@ -4,7 +4,6 @@ package filerepository
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -50,40 +49,46 @@ func (r *Repository) GetWorkflow(ctx context.Context, _ string, workflowID strin
 	if err != nil {
 		return nil, err
 	}
-	wf, ok := def.Workflows[workflowID]
+	wf, ok := def.WorkflowByID[workflowID]
 	if !ok {
-		return nil, fmt.Errorf("workflow %q not found; available: %v", workflowID, slices.Sorted(maps.Keys(def.Workflows)))
+		return nil, fmt.Errorf("workflow %q not found; available: %v", workflowID, orderedWorkflowIDs(def.Workflows))
 	}
 	return wf, nil
 }
 
-// ListWorkflows returns all workflow IDs defined in the project, sorted alphabetically.
+// ListWorkflows returns all workflow IDs defined in the project in config order.
 // projectID is ignored since the file repository is scoped to a single project.
 func (r *Repository) ListWorkflows(ctx context.Context, _ string) ([]string, error) {
 	def, err := r.GetProject(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(def.Workflows))
-	for name := range def.Workflows {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names, nil
+	return orderedWorkflowIDs(def.Workflows), nil
 }
 
 type rawConfig struct {
-	ID              string                 `yaml:"id"`
-	Name            string                 `yaml:"name"`
-	Version         int                    `yaml:"version"`
-	Constants       map[string]string      `yaml:"constants"`
-	Secrets         map[string]string      `yaml:"secrets"`
-	Variables       yaml.Node              `yaml:"variables"`
-	SecretVariables yaml.Node              `yaml:"secret_variables"`
-	Workflows       map[string]rawWorkflow `yaml:"workflows"`
+	ID              string            `yaml:"id"`
+	Name            string            `yaml:"name"`
+	Version         int               `yaml:"version"`
+	AI              *rawAIConfig      `yaml:"ai"`
+	Constants       map[string]string `yaml:"constants"`
+	Secrets         map[string]string `yaml:"secrets"`
+	Variables       yaml.Node         `yaml:"variables"`
+	SecretVariables yaml.Node         `yaml:"secret_variables"`
+	Workflows       []rawWorkflow     `yaml:"workflows"`
+}
+
+type rawAIConfig struct {
+	Enabled        *bool  `yaml:"enabled"`
+	Provider       string `yaml:"provider"`
+	BaseURL        string `yaml:"base_url"`
+	Model          string `yaml:"model"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	RedactSecrets  *bool  `yaml:"redact_secrets"`
 }
 
 type rawWorkflow struct {
+	ID               string            `yaml:"id"`
 	Name             string            `yaml:"name"`
 	TimeoutSeconds   int               `yaml:"timeout_seconds"`
 	Constants        map[string]string `yaml:"constants"`
@@ -143,6 +148,12 @@ func parse(data []byte) (*model.Definition, error) {
 		ID:   projectID,
 		Name: raw.Name,
 	}
+	if raw.AI != nil {
+		meta.AI = parseAIConfig(raw.AI)
+		if err := validateAIConfig(meta.AI); err != nil {
+			return nil, fmt.Errorf("ai: %w", err)
+		}
+	}
 
 	meta.Constants = appendSortedEntries(meta.Constants, raw.Constants, resolveEnvRef)
 	meta.Secrets = appendSortedEntries(meta.Secrets, raw.Secrets, resolveEnvRef)
@@ -150,22 +161,77 @@ func parse(data []byte) (*model.Definition, error) {
 	meta.Variables = append(meta.Variables, decodeEntries(&raw.Variables, resolveEnvRef)...)
 	meta.SecretVariables = append(meta.SecretVariables, decodeEntries(&raw.SecretVariables, resolveEnvRef)...)
 
-	workflows := make(map[string]*model.Workflow, len(raw.Workflows))
-	for wfKey, rawWF := range raw.Workflows {
-		wf, err := parseWorkflow(wfKey, rawWF, projectID)
+	workflows := make([]*model.Workflow, 0, len(raw.Workflows))
+	workflowByID := make(map[string]*model.Workflow, len(raw.Workflows))
+	for index, rawWF := range raw.Workflows {
+		wf, err := parseWorkflow(rawWF, projectID)
 		if err != nil {
-			return nil, fmt.Errorf("workflow %q: %w", wfKey, err)
+			return nil, fmt.Errorf("workflow %d: %w", index+1, err)
 		}
-		workflows[wfKey] = wf
+		if _, exists := workflowByID[wf.ID]; exists {
+			return nil, fmt.Errorf("workflow %d: duplicate id %q", index+1, wf.ID)
+		}
+		workflows = append(workflows, wf)
+		workflowByID[wf.ID] = wf
 	}
 
-	return &model.Definition{Meta: meta, Workflows: workflows}, nil
+	return &model.Definition{Meta: meta, Workflows: workflows, WorkflowByID: workflowByID}, nil
 }
 
-func parseWorkflow(key string, raw rawWorkflow, projectID string) (*model.Workflow, error) {
-	workflowID := key
+func parseAIConfig(raw *rawAIConfig) *model.AIConfig {
+	if raw == nil {
+		return nil
+	}
+
+	enabled := true
+	if raw.Enabled != nil {
+		enabled = *raw.Enabled
+	}
+
+	redactSecrets := true
+	if raw.RedactSecrets != nil {
+		redactSecrets = *raw.RedactSecrets
+	}
+
+	return &model.AIConfig{
+		Enabled:        enabled,
+		Provider:       strings.ToLower(strings.TrimSpace(resolveEnvRef(raw.Provider))),
+		BaseURL:        strings.TrimSpace(resolveEnvRef(raw.BaseURL)),
+		Model:          strings.TrimSpace(resolveEnvRef(raw.Model)),
+		TimeoutSeconds: raw.TimeoutSeconds,
+		RedactSecrets:  redactSecrets,
+	}
+}
+
+func validateAIConfig(config *model.AIConfig) error {
+	if config == nil {
+		return nil
+	}
+	if config.TimeoutSeconds < 0 {
+		return fmt.Errorf("timeout_seconds must be non-negative")
+	}
+	if config.Provider != "" && config.Provider != "ollama" && config.Provider != "openai_compatible" {
+		return fmt.Errorf("provider must be one of: ollama, openai_compatible")
+	}
+	if !config.Enabled {
+		return nil
+	}
+	if config.Provider == "" {
+		return fmt.Errorf("provider is required when ai is enabled")
+	}
+	if config.BaseURL == "" {
+		return fmt.Errorf("base_url is required when ai is enabled")
+	}
+	if config.Model == "" {
+		return fmt.Errorf("model is required when ai is enabled")
+	}
+	return nil
+}
+
+func parseWorkflow(raw rawWorkflow, projectID string) (*model.Workflow, error) {
+	workflowID := strings.TrimSpace(raw.ID)
 	if workflowID == "" {
-		workflowID = raw.Name
+		return nil, fmt.Errorf("id is required")
 	}
 	wf := &model.Workflow{
 		ID:             workflowID,
@@ -174,7 +240,7 @@ func parseWorkflow(key string, raw rawWorkflow, projectID string) (*model.Workfl
 		TimeoutSeconds: raw.TimeoutSeconds,
 	}
 	if wf.Name == "" {
-		wf.Name = key
+		wf.Name = workflowID
 	}
 
 	wf.Constants = appendSortedEntries(wf.Constants, raw.Constants, resolveEnvRef)
@@ -207,6 +273,17 @@ func parseWorkflow(key string, raw rawWorkflow, projectID string) (*model.Workfl
 	wf.OnErrorSteps = errorSteps
 
 	return wf, nil
+}
+
+func orderedWorkflowIDs(workflows []*model.Workflow) []string {
+	ids := make([]string, 0, len(workflows))
+	for _, workflow := range workflows {
+		if workflow == nil || workflow.ID == "" {
+			continue
+		}
+		ids = append(ids, workflow.ID)
+	}
+	return ids
 }
 
 func parseBlocks(blocks orderedBlocks) ([]model.Step, error) {

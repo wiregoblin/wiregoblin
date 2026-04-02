@@ -47,7 +47,7 @@ func (s *Service) Close() {
 	s.registry.Close()
 }
 
-// ListWorkflows returns all workflow IDs defined in the project, sorted alphabetically.
+// ListWorkflows returns all workflow IDs defined in the project in config order.
 func (s *Service) ListWorkflows(ctx context.Context, projectID string) ([]string, error) {
 	return s.projects.ListWorkflows(ctx, projectID)
 }
@@ -73,7 +73,7 @@ func (s *Service) RunWorkflow(
 
 	go func() {
 		defer close(events)
-		s.executeWorkflow(project.Meta, project.Workflows, wfDef, opts, events)
+		s.executeWorkflow(project.Meta, project.WorkflowByID, wfDef, opts, events)
 	}()
 
 	return events, nil

@@ -23,13 +23,6 @@ func (b *Block) Execute(
 		return nil, err
 	}
 	config.Request = requestBody
-	startedAt := time.Now()
-
-	response, err := b.Invoke(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-	responseTimeMS := time.Since(startedAt).Milliseconds()
 	request := map[string]any{
 		"address":  config.Address,
 		"tls":      config.TLS,
@@ -37,6 +30,18 @@ func (b *Block) Execute(
 		"request":  config.Request,
 		"metadata": config.Metadata,
 	}
+	startedAt := time.Now()
+
+	response, err := b.Invoke(ctx, config)
+	if err != nil {
+		return &block.Result{
+			Exports: map[string]string{
+				"responseTimeMs": fmt.Sprintf("%d", time.Since(startedAt).Milliseconds()),
+			},
+			Request: request,
+		}, err
+	}
+	responseTimeMS := time.Since(startedAt).Milliseconds()
 
 	var output any
 	if err := json.Unmarshal([]byte(response), &output); err != nil {

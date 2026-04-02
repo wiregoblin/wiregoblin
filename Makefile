@@ -26,9 +26,12 @@ DOCKER_BUILD_ARGS ?= --platform $(DOCKER_PLATFORMS) -t $(DOCKER_IMAGE):$(DOCKER_
 	run-http-example-json \
 	run-grpc-example \
 	run-local-stack-example \
+	run-ai-summary-example \
+	run-ai-success-summary-example \
 	run-goto-example \
 	run-workflow-timeout-example \
 	run-retry-example \
+	run-retry-exhaustion-example \
 	run-foreach-example \
 	run-foreach-range-example \
 	run-postgres-transaction-example \
@@ -65,6 +68,12 @@ run-grpc-example: ## Run the gRPC example workflow
 run-local-stack-example: ## Run the local stack example workflow
 	$(call run_workflow,-vv,local_stack_example)
 
+run-ai-summary-example: ## Run a failing workflow and print automatic AI summary (requires local AI server)
+	-$(call run_workflow,,error_handler_example)
+
+run-ai-success-summary-example: ## Run a successful workflow and print AI summary (requires local AI server)
+	$(call run_workflow,--ai-summary-success,http_example)
+
 run-goto-example: ## Run the goto example workflow
 	$(call run_workflow,,goto_example)
 
@@ -73,6 +82,9 @@ run-workflow-timeout-example: ## Run the workflow timeout example
 
 run-retry-example: ## Run the retry example workflow
 	$(call run_workflow,-vv,retry_example)
+
+run-retry-exhaustion-example: ## Run the retry exhaustion example workflow
+	$(call run_workflow,-vv,retry_exhaustion_example)
 
 run-foreach-example: ## Run the foreach example workflow
 	$(call run_workflow,-vvv,foreach_example)
