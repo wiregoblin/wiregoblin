@@ -138,6 +138,7 @@ Populated inside a child workflow invoked via a `workflow` block.
 | [`openai`](#openai) | OpenAI-compatible chat completion |
 | [`smtp`](#smtp) | Send an email via SMTP |
 | [`imap`](#imap) | Wait for and read an email via IMAP |
+| [`slack`](#slack) | Send a Slack message via Incoming Webhook |
 | [`telegram`](#telegram) | Send a Telegram message |
 | [`container`](#container) | Run a command inside a Docker container |
 | [`delay`](#delay) | Pause execution |
@@ -546,6 +547,32 @@ Sends a message via the Telegram Bot API.
   token: "@telegram_token"
   chat_id: "@chat_id"
   message: "Deploy of $service finished with status: $status"
+```
+
+---
+
+## slack
+
+Sends a message via a Slack Incoming Webhook.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `webhook_url` | string | yes | Slack Incoming Webhook URL |
+| `text` | string | no* | Message text; supports `$`/`@`/`!` interpolation |
+| `blocks` | string | no* | Raw JSON array of Slack Block Kit blocks |
+| `channel` | string | no | Override destination channel when allowed by the webhook |
+| `username` | string | no | Override display name when allowed by the webhook |
+| `icon_emoji` | string | no | Override icon emoji when allowed by the webhook |
+| `timeout_seconds` | int | no | Request timeout |
+
+\* At least one of `text` or `blocks` is required.
+
+```yaml
+- id: "notify_slack"
+  type: "slack"
+  webhook_url: "@slack_webhook_url"
+  text: "Deploy of $service finished with status: $status"
+  blocks: '[{"type":"section","text":{"type":"mrkdwn","text":"*Deploy* `$service` finished with status: `$status`"}}]'
 ```
 
 ---

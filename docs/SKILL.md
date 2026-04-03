@@ -333,6 +333,17 @@ workflows:
     $status: "outputs.statusCode"
 ```
 
+### slack
+```yaml
+- id: "step_id"
+  type: "slack"
+  webhook_url: "@slack_webhook_url"
+  text: "Text with $variables"
+  blocks: '[{"type":"section","text":{"type":"mrkdwn","text":"*Status:* $status"}}]'
+  assign:
+    $status: "outputs.statusCode"
+```
+
 ### container
 ```yaml
 - id: "step_id"

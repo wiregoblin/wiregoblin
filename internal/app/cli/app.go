@@ -19,6 +19,7 @@ import (
 	redisblock "github.com/wiregoblin/wiregoblin/internal/block/redis"
 	retryblock "github.com/wiregoblin/wiregoblin/internal/block/retry"
 	setvarsblock "github.com/wiregoblin/wiregoblin/internal/block/setvars"
+	slackblock "github.com/wiregoblin/wiregoblin/internal/block/slack"
 	smtpblock "github.com/wiregoblin/wiregoblin/internal/block/smtp"
 	telegramblock "github.com/wiregoblin/wiregoblin/internal/block/telegram"
 	transformblock "github.com/wiregoblin/wiregoblin/internal/block/transform"
@@ -67,6 +68,7 @@ func newRegistry() *engine.Registry {
 	registry.Register(redisblock.New())
 	registry.Register(retryblock.New())
 	registry.Register(setvarsblock.New())
+	registry.Register(slackblock.New())
 	registry.Register(smtpblock.New())
 	registry.Register(telegramblock.New())
 	registry.Register(transformblock.New())

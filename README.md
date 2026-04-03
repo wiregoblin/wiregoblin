@@ -268,6 +268,7 @@ Interpolation works inside any string field: `"Bearer @token"`, `"Hello, $user!"
 | `openai` | OpenAI-compatible chat completion |
 | `smtp` | Send an email via SMTP |
 | `imap` | Wait for and read an email via IMAP |
+| `slack` | Send a Slack message |
 | `telegram` | Telegram message |
 | `container` | Docker container job |
 | `delay` | Pause execution |
