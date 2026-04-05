@@ -87,17 +87,17 @@ This starts local dependencies for the examples:
 - Redis on `127.0.0.1:16379`
 - GreenMail SMTP/IMAP on `127.0.0.1:13025` / `127.0.0.1:13143`
 
-Main example project: `config/example.project.yaml`
+Main example project: `config/example.wiregoblin.yaml`
 
 ## Run
 
 ```bash
 wiregoblin-cli run
-wiregoblin-cli run -p config/example.project.yaml
+wiregoblin-cli run -p config/example.wiregoblin.yaml
 wiregoblin-cli run <workflow_id>
-wiregoblin-cli run -p config/example.project.yaml http_example
-wiregoblin-cli run -e .env -p config/example.project.yaml http_example
-wiregoblin-cli run --ai-summary-success -p config/example.project.yaml http_example
+wiregoblin-cli run -p config/example.wiregoblin.yaml http_example
+wiregoblin-cli run -e .env -p config/example.wiregoblin.yaml http_example
+wiregoblin-cli run --ai-summary-success -p config/example.wiregoblin.yaml http_example
 ```
 
 If `<workflow_id>` is omitted, WireGoblin runs all workflows sequentially in config order.
@@ -312,7 +312,7 @@ docker run --rm \
   -w /workspace \
   -e API_TOKEN="$API_TOKEN" \
   wiregoblin/wiregoblin:cli-latest \
-  run -p /workspace/config/example.project.yaml http_example
+  run -p /workspace/config/example.wiregoblin.yaml http_example
 ```
 
 ---
@@ -342,7 +342,7 @@ make run-workflow-block-example
 make compose-down
 ```
 
-Notable workflows in `config/example.project.yaml`:
+Notable workflows in `config/example.wiregoblin.yaml`:
 
 - `http_example`: request, extract fields, and assert status/timing
 - `local_stack_example`: HTTP + Redis + Postgres + container + local AI/Telegram mocks

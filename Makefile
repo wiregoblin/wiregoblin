@@ -1,4 +1,4 @@
-PROJECT ?= config/example.project.yaml
+PROJECT ?= config/example.wiregoblin.yaml
 WORKFLOW ?=
 
 CLI_PACKAGE ?= ./cmd/wiregoblin-cli
