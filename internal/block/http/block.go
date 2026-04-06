@@ -44,6 +44,7 @@ func (b *Block) ReferencePolicy() []block.ReferencePolicy {
 		{Field: "url", Constants: true, Variables: true, InlineOnly: true},
 		{Field: "body", Constants: true, Variables: true, InlineOnly: true},
 		{Field: "headers", Constants: true, Variables: true, InlineOnly: true},
+		{Field: "sign", Constants: true, Variables: true, InlineOnly: true},
 	}
 }
 

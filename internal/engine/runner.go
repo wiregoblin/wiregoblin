@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -919,15 +921,27 @@ func readMappedValue(obj any, path string) (any, bool) {
 		if part == "" {
 			continue
 		}
-		m, ok := current.(map[string]any)
-		if !ok {
-			return nil, false
+		switch typed := current.(type) {
+		case map[string]any:
+			resolved, found := resolveKey(typed, part)
+			if !found {
+				return nil, false
+			}
+			current = typed[resolved]
+		default:
+			index, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, false
+			}
+			v := reflect.ValueOf(current)
+			if !v.IsValid() || (v.Kind() != reflect.Slice && v.Kind() != reflect.Array) {
+				return nil, false
+			}
+			if index < 0 || index >= v.Len() {
+				return nil, false
+			}
+			current = v.Index(index).Interface()
 		}
-		resolved, found := resolveKey(m, part)
-		if !found {
-			return nil, false
-		}
-		current = m[resolved]
 	}
 	return current, true
 }
