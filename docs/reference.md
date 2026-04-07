@@ -57,6 +57,24 @@ wiregoblin-cli run -e .env my_workflow
 
 ---
 
+## Workflow fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Workflow ID |
+| `name` | string | no | Display name; defaults to `id` |
+| `disable_run` | bool | no | When `true`, the workflow cannot be started directly via `wiregoblin-cli run`, but can still be invoked from a `workflow` block |
+| `timeout_seconds` | int | no | Maximum total runtime for the workflow |
+| `constants` | map | no | Workflow-scoped constants |
+| `secrets` | map | no | Workflow-scoped secrets |
+| `variables` | map | no | Workflow-scoped variables |
+| `secret_variables` | map | no | Workflow-scoped secret variables |
+| `outputs` | map | no | Values exported when used as a child workflow |
+| `catch_error_blocks` | list | no | Blocks executed after workflow failure |
+| `blocks` | list | yes | Workflow steps |
+
+---
+
 ## Project AI config
 
 `ai` is an optional project-level section that configures a shared local AI runtime for features such as failed-run debugging, output summarization, and failure classification.

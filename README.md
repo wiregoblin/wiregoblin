@@ -249,6 +249,7 @@ Interpolation works inside any string field: `"Bearer @token"`, `"Hello, $user!"
 
 - `condition:` — skip a step unless `variable operator expected` is satisfied.
 - `continue_on_error: true` — failed step gets status `ignored-error`; workflow continues.
+- `disable_run: true` — blocks direct `wiregoblin-cli run <workflow_id>` execution; the workflow can still be invoked from a `workflow` block.
 - `timeout_seconds` on a workflow — caps total runtime for that workflow.
 
 ### Operators
@@ -338,6 +339,7 @@ make run-email-example
 make run-error-handler-example
 make run-continue-on-error-example
 make run-secret-variables-example
+make run-disable-run-example
 make run-workflow-block-example
 make compose-down
 ```
@@ -349,6 +351,7 @@ Notable workflows in `config/example.wiregoblin.yaml`:
 - `retry_example`: retry transport and status-code failures with backoff
 - `foreach_example`: iterate over structured items and collect outputs
 - `parallel_example`: run multiple heterogeneous blocks concurrently
+- `parent_builtins_child_example`: child-only workflow example with `disable_run: true`
 - `workflow_block_example`: compose parent and child workflows
 
 ## AI assistant skill

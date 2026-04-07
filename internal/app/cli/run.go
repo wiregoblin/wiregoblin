@@ -38,15 +38,19 @@ func (a *App) Run(ctx context.Context, workflowID *string, opts ExecuteOptions) 
 		return a.executeWorkflow(ctx, projectID, *workflowID, opts)
 	}
 
-	names, err := a.service.ListWorkflows(ctx, projectID)
+	project, err := a.projects.GetProject(ctx, projectID)
 	if err != nil {
 		if !opts.JSONOutput {
 			_, _ = fmt.Fprintln(opts.Stderr, err)
 		}
 		return err
 	}
-	for _, name := range names {
-		if err := a.executeWorkflow(ctx, projectID, name, opts); err != nil {
+
+	for _, workflow := range project.Workflows {
+		if workflow == nil || workflow.DisableRun {
+			continue
+		}
+		if err := a.executeWorkflow(ctx, projectID, workflow.ID, opts); err != nil {
 			return err
 		}
 	}
@@ -82,15 +86,15 @@ func (a *App) executeWorkflow(ctx context.Context, projectID, workflowName strin
 		return err
 	}
 
-	report, err := streamWorkflowWithReport(events, opts.Verbosity, opts.JSONOutput, opts.Stdout, opts.Stderr)
-	if project.Meta != nil && project.Meta.AI != nil && project.Meta.AI.Enabled {
+	report, reportErr := streamWorkflowWithReport(events, opts.Verbosity, opts.JSONOutput, opts.Stdout, opts.Stderr)
+	if report != nil && project.Meta != nil && project.Meta.AI != nil && project.Meta.AI.Enabled {
 		if report.failedWorkflow != nil {
 			printAIFailureSummary(ctx, opts.Stderr, project.Meta.AI, report)
 		} else if opts.AISummarySuccess && report.workflowFinished != nil && report.workflowFinished.Error == "" {
 			printAISuccessSummary(ctx, opts.Stderr, project.Meta.AI, report)
 		}
 	}
-	return err
+	return reportErr
 }
 
 type workflowReport struct {
@@ -343,10 +347,8 @@ func renderRetryHistory(event model.RunEvent) []string {
 			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d failed: %s | next delay %dms", attempt, errText, nextDelay))
 		case retryable:
 			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d failed: %s", attempt, errText))
-		case errText != "":
-			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d stopped retrying: %s", attempt, errText))
 		default:
-			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d stopped retrying.", attempt))
+			lines = append(lines, fmt.Sprintf("   ↻ Retry attempt %d stopped retrying: %s", attempt, errText))
 		}
 	}
 	return lines

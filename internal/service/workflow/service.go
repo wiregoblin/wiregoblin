@@ -63,6 +63,9 @@ func (s *Service) RunWorkflow(
 	if err != nil {
 		return nil, err
 	}
+	if wfDef.DisableRun {
+		return nil, fmt.Errorf("workflow %q cannot be run directly; invoke it via a workflow block", workflowID)
+	}
 
 	project, err := s.projects.GetProject(ctx, projectID)
 	if err != nil {

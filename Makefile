@@ -113,6 +113,10 @@ run-continue-on-error-example: ## Run the continue-on-error example workflow
 run-secret-variables-example: ## Run the secret variables example workflow
 	$(call run_workflow,,secret_variables_example)
 
+run-disable-run-example: ## Show direct-run refusal, then invoke the disabled workflow via workflow block
+	-$(call run_workflow,,parent_builtins_child_example)
+	$(call run_workflow,,workflow_block_example)
+
 run-workflow-block-example: ## Run the workflow block example
 	$(call run_workflow,,workflow_block_example)
 

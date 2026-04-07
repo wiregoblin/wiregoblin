@@ -47,6 +47,7 @@ type Workflow struct {
 	ID              string
 	ProjectID       string
 	Name            string
+	DisableRun      bool
 	TimeoutSeconds  int
 	Constants       []Entry
 	Outputs         map[string]string

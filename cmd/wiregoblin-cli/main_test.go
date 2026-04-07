@@ -217,6 +217,7 @@ name: Demo
 workflows:
   - id: child
     name: Child
+    disable_run: true
     blocks:
       - id: wait
         name: Child Wait
@@ -248,6 +249,43 @@ workflows:
 	}
 	if !strings.Contains(output, "  [1/1] Goblin pokes \"Child Wait\" [delay]") {
 		t.Fatalf("stderr = %q, want indented nested step", output)
+	}
+}
+
+func TestRunRejectsWorkflowWhenDirectRunIsDisallowed(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "wiregoblin.yaml")
+	config := `id: demo
+name: Demo
+workflows:
+  - id: child
+    name: Child
+    disable_run: true
+    blocks:
+      - id: wait
+        name: Child Wait
+        type: delay
+        milliseconds: 1
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	execErr := run(configPath, ptrStr("child"), 0, false, false, &stdout, &stderr)
+	if execErr == nil {
+		t.Fatal("run returned nil error, want error")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if got := execErr.Error(); got != `workflow "child" cannot be run directly; invoke it via a workflow block` {
+		t.Fatalf("error = %q", got)
+	}
+	if !strings.Contains(stderr.String(), `workflow "child" cannot be run directly; invoke it via a workflow block`) {
+		t.Fatalf("stderr = %q, want disallowed direct-run error", stderr.String())
 	}
 }
 
@@ -333,6 +371,49 @@ workflows:
 	}
 	if betaIndex > alphaIndex {
 		t.Fatalf("stderr = %q, want Beta before Alpha", output)
+	}
+}
+
+func TestRunAllSkipsDisableRunWorkflows(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "wiregoblin.yaml")
+	config := `id: demo
+name: Demo
+workflows:
+  - id: child
+    name: Child
+    disable_run: true
+    blocks:
+      - id: wait
+        name: Wait Child
+        type: delay
+        milliseconds: 1
+  - id: parent
+    name: Parent
+    blocks:
+      - id: wait
+        name: Wait Parent
+        type: delay
+        milliseconds: 1
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	execErr := run(configPath, nil, 0, false, false, &stdout, &stderr)
+	if execErr != nil {
+		t.Fatalf("run returned error: %v", execErr)
+	}
+
+	output := stderr.String()
+	if strings.Contains(output, `Goblin crew enters "Child"`) {
+		t.Fatalf("stderr = %q, did not want disabled workflow to run", output)
+	}
+	if !strings.Contains(output, `Goblin crew enters "Parent"`) {
+		t.Fatalf("stderr = %q, want runnable workflow to run", output)
 	}
 }
 

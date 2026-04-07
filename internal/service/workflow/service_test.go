@@ -1,10 +1,12 @@
 package workflow
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/wiregoblin/wiregoblin/internal/block"
 	"github.com/wiregoblin/wiregoblin/internal/model"
 )
 
@@ -46,3 +48,53 @@ func TestSecretValuesFromProjectIncludesSecretVariables(t *testing.T) {
 		t.Fatalf("runtime secret variable missing from %v", values)
 	}
 }
+
+func TestRunWorkflowRejectsDirectRunWhenDisallowed(t *testing.T) {
+	t.Parallel()
+
+	service := New(stubProjectRepository{
+		project: &model.Definition{
+			Meta: &model.Project{ID: "demo", Name: "Demo"},
+			WorkflowByID: map[string]*model.Workflow{
+				"child": {
+					ID:         "child",
+					Name:       "Child",
+					DisableRun: true,
+				},
+			},
+		},
+	}, stubBlockRegistry{})
+
+	events, err := service.RunWorkflow(context.Background(), "demo", "child", RunOptions{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if events != nil {
+		t.Fatal("expected nil events channel")
+	}
+	if got := err.Error(); got != `workflow "child" cannot be run directly; invoke it via a workflow block` {
+		t.Fatalf("error = %q", got)
+	}
+}
+
+type stubProjectRepository struct {
+	project *model.Definition
+}
+
+func (s stubProjectRepository) GetProject(context.Context, string) (*model.Definition, error) {
+	return s.project, nil
+}
+
+func (s stubProjectRepository) GetWorkflow(_ context.Context, _ string, workflowID string) (*model.Workflow, error) {
+	return s.project.WorkflowByID[workflowID], nil
+}
+
+func (s stubProjectRepository) ListWorkflows(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+type stubBlockRegistry struct{}
+
+func (stubBlockRegistry) Get(model.BlockType) (block.Block, error) { return nil, nil }
+
+func (stubBlockRegistry) Close() {}

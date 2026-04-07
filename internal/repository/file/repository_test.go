@@ -215,6 +215,41 @@ workflows:
 	}
 }
 
+func TestParseWorkflowDisableRunDefaultsToFalse(t *testing.T) {
+	project, err := parse([]byte(`
+id: demo
+name: Demo
+workflows:
+  - id: sample
+    blocks: []
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if workflowByID(project, "sample").DisableRun {
+		t.Fatal("expected disable_run to default to false")
+	}
+}
+
+func TestParseWorkflowDisableRunCanBeEnabled(t *testing.T) {
+	project, err := parse([]byte(`
+id: demo
+name: Demo
+workflows:
+  - id: sample
+    disable_run: true
+    blocks: []
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if !workflowByID(project, "sample").DisableRun {
+		t.Fatal("expected disable_run to be true")
+	}
+}
+
 func TestParsePreservesAssignConfig(t *testing.T) {
 	project, err := parse([]byte(`
 id: demo

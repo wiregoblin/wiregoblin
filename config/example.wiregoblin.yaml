@@ -792,6 +792,7 @@ workflows:
 
   - id: parent_builtins_child_example
     name: "Parent Built-ins Child Example"
+    disable_run: true
     outputs:
       child_run_label: "$child_run_label"
     blocks:

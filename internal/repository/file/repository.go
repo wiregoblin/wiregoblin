@@ -91,6 +91,7 @@ type rawAIConfig struct {
 type rawWorkflow struct {
 	ID               string            `yaml:"id"`
 	Name             string            `yaml:"name"`
+	DisableRun       bool              `yaml:"disable_run"`
 	TimeoutSeconds   int               `yaml:"timeout_seconds"`
 	Constants        map[string]string `yaml:"constants"`
 	Secrets          map[string]string `yaml:"secrets"`
@@ -264,6 +265,7 @@ func parseWorkflow(raw rawWorkflow, projectID string) (*model.Workflow, error) {
 		ID:             workflowID,
 		ProjectID:      projectID,
 		Name:           raw.Name,
+		DisableRun:     raw.DisableRun,
 		TimeoutSeconds: raw.TimeoutSeconds,
 	}
 	if wf.Name == "" {

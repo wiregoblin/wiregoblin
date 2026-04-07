@@ -32,6 +32,7 @@ secret_variables:   # mutable runtime secrets, referenced as $name; support ${VA
 workflows:
   - id: workflow_id
     name: "Workflow Name"
+    disable_run: false          # when true, cannot be started via CLI run; only via workflow block
     timeout_seconds: 30         # optional
     constants: {}               # workflow-scoped constants (override project-level)
     secrets: {}                 # workflow-scoped secrets
